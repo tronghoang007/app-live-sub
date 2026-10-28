@@ -11,6 +11,8 @@ class PhraseBookTest {
         assertEquals("Không", PhraseBook.lookup("いいえ。", "ja", "vi"))
         assertEquals("Cảm ơn", PhraseBook.lookup("どうも", "ja", "vi"))
         assertEquals("Vậy à", PhraseBook.lookup("そうですか。", "ja", "vi"))
+        assertEquals("Alo", PhraseBook.lookup("もしもし。", "ja", "vi"))
+        assertEquals("Hẹn gặp lại sau", PhraseBook.lookup("またあとで。", "ja", "vi"))
     }
 
     @Test

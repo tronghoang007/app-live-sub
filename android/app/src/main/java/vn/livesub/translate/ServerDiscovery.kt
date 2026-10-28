@@ -4,11 +4,11 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
-import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import vn.livesub.AppLog
 import java.net.Inet4Address
 
 data class DiscoveredServer(val url: String, val name: String, val model: String?)
@@ -39,13 +39,13 @@ class ServerDiscovery(context: Context) {
                         val host = ipv4(resolved) ?: return
                         val model = resolved.attributes["model"]?.toString(Charsets.UTF_8)
                         current = DiscoveredServer("http://$host:${resolved.port}", resolved.serviceName, model)
-                        Log.i(TAG, "found $current")
+                        AppLog.i(TAG) { "found $current" }
                         trySend(current)
                     }
 
                     override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
                         resolving = false
-                        Log.w(TAG, "resolve failed $errorCode")
+                        AppLog.w(TAG) { "resolve failed $errorCode" }
                     }
                 })
             }
@@ -60,7 +60,7 @@ class ServerDiscovery(context: Context) {
             override fun onDiscoveryStarted(serviceType: String) = Unit
             override fun onDiscoveryStopped(serviceType: String) = Unit
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                Log.w(TAG, "start discovery failed $errorCode")
+                AppLog.w(TAG) { "start discovery failed $errorCode" }
             }
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
         }

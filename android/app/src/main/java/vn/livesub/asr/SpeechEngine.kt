@@ -4,7 +4,6 @@ import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
-import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import vn.livesub.data.AsrEngineType
 import vn.livesub.data.AsrModel
@@ -24,6 +23,9 @@ interface SpeechEngine : Closeable {
      */
     data class Result(val text: String, val lang: String, val nonSpeech: Boolean = false)
 
+    /** Chữ nhận dạng có dấu câu hay không; không có thì [SentenceBoundary] chỉ dựa vào khoảng lặng. */
+    val hasPunctuation: Boolean get() = true
+
     /** @param language mã ngôn ngữ ép cho model, hoặc "" để model tự đoán (nếu hỗ trợ). */
     fun transcribe(samples: FloatArray, language: String): Result
 
@@ -32,7 +34,6 @@ interface SpeechEngine : Closeable {
 
         fun create(model: AsrModel, files: AsrModelFiles, numThreads: Int): SpeechEngine = when (model.engine) {
             AsrEngineType.WHISPER -> WhisperAsr(files, numThreads)
-            AsrEngineType.SENSE_VOICE -> SenseVoiceAsr(files, numThreads)
             AsrEngineType.TRANSDUCER -> TransducerAsr(files, numThreads, fixedLanguage = model.languages!!.single())
         }
     }
@@ -46,60 +47,6 @@ internal fun OfflineRecognizer.decodeOnce(samples: FloatArray) = createStream().
         getResult(stream)
     } finally {
         stream.release()
-    }
-}
-
-/**
- * SenseVoice (Alibaba): mô hình không tự hồi quy nên nhanh hơn Whisper nhiều;
- * hiểu Trung, Anh, Nhật, Hàn, Quảng Đông; tự trả kèm ngôn ngữ và loại âm thanh (lời nói/nhạc...).
- */
-class SenseVoiceAsr(files: AsrModelFiles, numThreads: Int) : SpeechEngine {
-
-    private val baseConfig = OfflineRecognizerConfig(
-        featConfig = FeatureConfig(sampleRate = SpeechEngine.SAMPLE_RATE, featureDim = 80),
-        modelConfig = OfflineModelConfig(
-            senseVoice = OfflineSenseVoiceModelConfig(
-                model = files[ModelPart.MODEL].absolutePath,
-                // Rỗng = tự nhận diện ngôn ngữ.
-                language = "",
-                // Đổi số đọc thành chữ số ("にじゅう" -> "20") và thêm dấu câu.
-                useInverseTextNormalization = true,
-            ),
-            tokens = files[ModelPart.TOKENS].absolutePath,
-            numThreads = numThreads,
-        ),
-    )
-    private val recognizer = OfflineRecognizer(assetManager = null, config = baseConfig)
-    private var currentLanguage = ""
-
-    override fun transcribe(samples: FloatArray, language: String): SpeechEngine.Result {
-        // SenseVoice chỉ biết vài ngôn ngữ; ngôn ngữ khác thì để nó tự đoán.
-        val lang = language.takeIf { it in SUPPORTED } ?: ""
-        if (lang != currentLanguage) {
-            recognizer.setConfig(
-                baseConfig.copy(
-                    modelConfig = baseConfig.modelConfig.copy(
-                        senseVoice = baseConfig.modelConfig.senseVoice.copy(language = lang),
-                    ),
-                ),
-            )
-            currentLanguage = lang
-        }
-        val r = recognizer.decodeOnce(samples)
-        // Nhãn trả về dạng "<|ja|>", "<|Speech|>", "<|BGM|>".
-        val detected = r.lang.removePrefix("<|").removeSuffix("|>").lowercase()
-        val event = r.event.removePrefix("<|").removeSuffix("|>")
-        return SpeechEngine.Result(
-            text = r.text.trim(),
-            lang = detected.ifEmpty { lang },
-            nonSpeech = event.isNotEmpty() && event != "Speech",
-        )
-    }
-
-    override fun close() = recognizer.release()
-
-    companion object {
-        private val SUPPORTED = setOf("zh", "en", "ja", "ko", "yue")
     }
 }
 
@@ -126,6 +73,9 @@ class TransducerAsr(files: AsrModelFiles, numThreads: Int, private val fixedLang
             decodingMethod = "greedy_search",
         ),
     )
+
+    // ReazonSpeech không xuất dấu câu.
+    override val hasPunctuation = false
 
     override fun transcribe(samples: FloatArray, language: String): SpeechEngine.Result =
         SpeechEngine.Result(text = recognizer.decodeOnce(samples).text.trim(), lang = fixedLanguage)

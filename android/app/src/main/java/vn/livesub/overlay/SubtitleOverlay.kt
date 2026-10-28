@@ -35,7 +35,7 @@ data class SubtitleEvent(
  * mirror lên TV vì nó là một phần nội dung màn hình.
  *
  * Phụ đề xếp chồng kiểu chat: câu mới nhất ở dưới cùng, các câu trước đẩy lên
- * trên và mờ đi; giữ tối đa [AppSettings.stackSize] câu.
+ * trên; giữ tối đa [AppSettings.stackSize] câu. Mọi câu đều sáng như nhau.
  *
  * Gồm hai cửa sổ:
  * - Cửa sổ phụ đề: không nhận focus; kéo được để đổi vị trí.
@@ -251,6 +251,14 @@ class SubtitleOverlay(
         refreshEntries()
     }
 
+    /** Thay bản dịch của câu [id] bằng bản tốt hơn đến sau; câu đã trôi khỏi khung thì bỏ qua. */
+    fun updateTranslation(id: Long, translated: String) {
+        val index = entries.indexOfFirst { it.id == id }
+        if (index < 0) return
+        entries[index] = entries[index].copy(translated = translated)
+        refreshEntries()
+    }
+
     private fun trimEntries() {
         val max = settings.stackSize.coerceAtLeast(1)
         while (entries.size > max) entries.removeAt(0)
@@ -272,13 +280,10 @@ class SubtitleOverlay(
             val entry = entries.getOrNull(i)
             view.root.visibility = if (entry == null) View.GONE else View.VISIBLE
             if (entry == null) return@forEachIndexed
-            val latest = i == entries.lastIndex
             val main = entry.translated ?: entry.src
             val showSource = settings.showSourceText && entry.translated != null && entry.translated != entry.src
 
             view.root.gravity = textGravity
-            // Câu cũ mờ hơn để mắt tập trung vào câu mới nhất.
-            view.root.alpha = if (latest) 1f else 0.6f
             view.main.gravity = textGravity
             view.source.gravity = textGravity
             // Bản dịch tối đa 3 dòng, câu gốc 2 dòng; quá dài thì thu nhỏ chữ thay vì cắt "…".

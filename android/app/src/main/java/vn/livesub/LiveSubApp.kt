@@ -3,6 +3,7 @@ package vn.livesub
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.pm.ApplicationInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,6 +23,7 @@ class LiveSubApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        AppLog.enabled = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
         CrashLog.install(this)
         container = AppContainer(this)
         val channel = NotificationChannel(CHANNEL_ID, "Phụ đề trực tiếp", NotificationManager.IMPORTANCE_LOW).apply {

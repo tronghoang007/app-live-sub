@@ -15,7 +15,6 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -26,11 +25,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import vn.livesub.AppLog
 import vn.livesub.LiveSubApp
 import vn.livesub.MainActivity
 import vn.livesub.R
@@ -40,12 +41,14 @@ import vn.livesub.asr.SpeechEngine
 import vn.livesub.asr.SpeechPipeline
 import vn.livesub.asr.TextCleaner
 import vn.livesub.audio.AudioCaptureException
+import vn.livesub.audio.LevelMeter
 import vn.livesub.audio.PlaybackAudioCapture
 import vn.livesub.audio.SilenceMonitor
 import vn.livesub.data.AppSettings
 import vn.livesub.overlay.SubtitleEvent
 import vn.livesub.overlay.SubtitleOverlay
 import vn.livesub.translate.MlKitTranslator
+import vn.livesub.translate.PhraseBook
 import vn.livesub.translate.ServerDiscovery
 import vn.livesub.translate.ServerTranslator
 import vn.livesub.translate.SubtitleTranslator
@@ -71,6 +74,11 @@ class SubtitleService : LifecycleService() {
     private var overlay: SubtitleOverlay? = null
     private var pipeline: SpeechPipeline? = null
     private var translator: SubtitleTranslator? = null
+    private var serverTranslator: ServerTranslator? = null
+
+    /** Câu final chờ bản dịch LLM; câu nào đến sau quá nhiều thì bỏ câu cũ nhất và dùng bản ML Kit cho nó. */
+    private class Refinement(val id: Long, val text: String, val source: String, val target: String)
+    private var refinements: Channel<Refinement>? = null
     private var textLangId: TextLanguageIdentifier? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var sessionJob: Job? = null
@@ -117,7 +125,7 @@ class SubtitleService : LifecycleService() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
         ).any { types ->
             runCatching { ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), types) }
-                .onFailure { Log.e(TAG, "startForeground($types) failed", it) }
+                .onFailure { AppLog.e(TAG, it) { "startForeground($types) failed" } }
                 .isSuccess
         }
         if (!started) {
@@ -179,19 +187,14 @@ class SubtitleService : LifecycleService() {
         when {
             // Model một ngôn ngữ (ReazonSpeech): ngôn ngữ phiên cố định theo model.
             modelLangs != null && modelLangs.size == 1 -> tracker.lock(modelLangs.single())
-            s.sourceLang != AppSettings.AUTO -> {
-                tracker.lock(s.sourceLang)
-                if (modelLangs != null && s.sourceLang !in modelLangs) {
-                    showNotice(Notice(Notice.Level.WARNING,
-                        "${modelSize.label} không hiểu ${s.sourceLang.uppercase()}. Hãy chọn model Whisper cho ngôn ngữ này."))
-                }
-            }
+            s.sourceLang != AppSettings.AUTO -> tracker.lock(s.sourceLang)
         }
         val langId = TextLanguageIdentifier().also { textLangId = it }
         val mlKit = MlKitTranslator(lifecycleScope, s.wifiOnlyDownloads)
         val manualServer = ServerTranslator.normalizeUrl(s.translationServer)
         val serverTranslator = if (s.useTranslationServer) ServerTranslator(mlKit).apply { baseUrl = manualServer } else null
         translator = serverTranslator ?: mlKit
+        this.serverTranslator = serverTranslator
 
         val p = try {
             withContext(asrDispatcher) {
@@ -200,7 +203,7 @@ class SubtitleService : LifecycleService() {
                 SpeechPipeline(files, SpeechEngine.create(modelSize, files, threads), tracker, langId, s.showPartials)
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "load model failed", e)
+            AppLog.e(TAG, e) { "load model failed" }
             stopSession(Notice(Notice.Level.ERROR, "Không nạp được model (file hỏng?). Hãy xoá và tải lại model trong Cài đặt."))
             return
         }
@@ -224,6 +227,28 @@ class SubtitleService : LifecycleService() {
 
             launch { p.segments.collect { onSegment(it) } }
 
+            // Bản dịch LLM dịch lần lượt từng câu rồi điền vào câu đang hiện chữ gốc.
+            if (serverTranslator != null) {
+                val queue = Channel<Refinement>(MAX_PENDING_REFINEMENTS, BufferOverflow.DROP_OLDEST) { dropped ->
+                    // Hàng đợi đầy (server chậm hơn nhịp thoại): câu bị bỏ dùng bản ML Kit thay vì treo chữ gốc.
+                    lifecycleScope.launch { showFallback(dropped) }
+                }.also { refinements = it }
+                launch {
+                    for (job in queue) {
+                        val t0 = SystemClock.elapsedRealtime()
+                        val out = serverTranslator.refine(job.text, job.source, job.target)
+                        if (out == null) {
+                            showTranslationNotice(Notice(Notice.Level.INFO, ServerTranslator.SERVER_DOWN_NOTE))
+                            showFallback(job)
+                            continue
+                        }
+                        AppLog.d(TAG) { "refine #${job.id} ${SystemClock.elapsedRealtime() - t0}ms out=$out" }
+                        if (out.any { it.isLetter() }) overlay?.updateTranslation(job.id, out) else showFallback(job)
+                        clearTranslationNotice()
+                    }
+                }
+            }
+
             // Không nhập địa chỉ thì tự tìm server trong mạng suốt phiên (server có thể bật sau).
             if (serverTranslator != null && manualServer == null) {
                 launch {
@@ -244,7 +269,7 @@ class SubtitleService : LifecycleService() {
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
-                        Log.e(TAG, "pipeline error", e)
+                        AppLog.e(TAG, e) { "pipeline error" }
                         showNotice(Notice(Notice.Level.WARNING, "Lỗi nhận dạng: ${e.message}"))
                     }
                 }
@@ -256,17 +281,21 @@ class SubtitleService : LifecycleService() {
 
     private suspend fun captureAudio(mp: MediaProjection, audio: Channel<ShortArray>) {
         val silence = SilenceMonitor()
+        val meter = LevelMeter()
         val audioManager = getSystemService(AudioManager::class.java)
+        AppLog.d(TAG) { "âm lượng media: ${audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)}/${audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}" }
         var laggingWarned = false
         try {
             PlaybackAudioCapture(mp).chunks().collect { chunk ->
                 if (silence.onChunk(chunk, CHUNK_MS)) onSilenceStateChanged(silence.state, audioManager.isMusicActive)
+                // Chỉ đo khi ghi log debug: biết nguồn có nhỏ quá cho nhận dạng không.
+                if (AppLog.enabled) meter.onChunk(chunk, CHUNK_MS)?.let { AppLog.d(TAG) { "mức âm: đỉnh=${"%.3f".format(it.peak)} rms=${"%.4f".format(it.rms)}" } }
 
                 // Máy xử lý không kịp: bỏ bớt audio thay vì để độ trễ phụ đề tăng mãi.
                 if (queuedChunks.get() >= MAX_QUEUED_CHUNKS) {
                     if (!laggingWarned) {
                         laggingWarned = true
-                        showNotice(Notice(Notice.Level.WARNING, "Máy xử lý không kịp. Hãy chọn model nhỏ hơn (tiny) hoặc tắt phụ đề tạm thời (partial)."))
+                        showNotice(Notice(Notice.Level.WARNING, "Máy xử lý không kịp. Hãy tắt phụ đề tạm thời (partial) hoặc đổi model nhận dạng."))
                     }
                     return@collect
                 }
@@ -305,12 +334,23 @@ class SubtitleService : LifecycleService() {
         val target = settings.targetLang
         // ML Kit/Google không có tiếng Quảng Đông riêng: dịch qua tiếng Trung (chữ Hán).
         val source = if (seg.lang == "yue") "zh" else seg.lang
+        val server = serverTranslator
+        // Có server dịch bằng LLM thì không hiện bản ML Kit (hay sai nghĩa rồi mới bị thay): chỉ hiện chữ gốc
+        // tới khi bản LLM về (xem [refinements]). Câu đã có trong PhraseBook thì dịch ngay.
+        if (server != null && source != target && server.canRefine() && PhraseBook.lookup(seg.text, source, target) == null) {
+            ov.render(SubtitleEvent(seg.id, type, seg.lang, seg.text, null))
+            if (seg.isFinal) refinements?.trySend(Refinement(seg.id, seg.text, source, target))
+            return
+        }
         val t0 = SystemClock.elapsedRealtime()
-        val result = translator?.translate(seg.text, source, target, seg.isFinal)
+        // Với server luôn dùng quick(): translate() của nó sẽ chờ LLM, kể cả câu PhraseBook.
+        val result = (server?.quick(seg.text, source, target) ?: translator?.translate(seg.text, source, target, seg.isFinal))
             ?: TranslationResult.Failed("Chưa sẵn sàng")
         if (seg.isFinal) {
-            val out = (result as? TranslationResult.Success)?.text ?: result.toString()
-            Log.d(TAG, "translate #${seg.id} ${seg.lang}->$target ${SystemClock.elapsedRealtime() - t0}ms out=$out")
+            AppLog.d(TAG) {
+                val out = (result as? TranslationResult.Success)?.text ?: result.toString()
+                "translate #${seg.id} ${seg.lang}->$target ${SystemClock.elapsedRealtime() - t0}ms out=$out"
+            }
         }
 
         // Bản dịch không có chữ nào (ML Kit đôi khi trả về ".") thì hiện câu gốc thay vì dòng trống.
@@ -330,6 +370,12 @@ class SubtitleService : LifecycleService() {
         }
     }
 
+    /** Bản ML Kit cho câu đang chờ LLM mà LLM không trả về được (server lỗi hoặc hàng đợi đầy). */
+    private suspend fun showFallback(job: Refinement) {
+        val text = (serverTranslator?.quick(job.text, job.source, job.target) as? TranslationResult.Success)?.text ?: return
+        if (text.any { it.isLetter() }) overlay?.updateTranslation(job.id, text)
+    }
+
     /**
      * Model chỉ biết tiếng Nhật (ReazonSpeech) gặp video tiếng khác sẽ phiên âm thành katakana
      * vô nghĩa. Nếu 3/4 câu gần nhất như vậy thì nhắc người dùng đổi model.
@@ -341,7 +387,7 @@ class SubtitleService : LifecycleService() {
         if (recentKatakana.size == 4 && recentKatakana.count { it } >= 3) {
             wrongLanguageWarned = true
             showNotice(Notice(Notice.Level.WARNING,
-                "Video có vẻ không nói tiếng Nhật. ${settings.asrModel.label} chỉ hiểu tiếng Nhật, hãy đổi sang SenseVoice hoặc Whisper."))
+                "Video có vẻ không nói tiếng Nhật. ${settings.asrModel.label} chỉ hiểu tiếng Nhật, hãy đổi sang Whisper."))
         }
     }
 
@@ -415,6 +461,8 @@ class SubtitleService : LifecycleService() {
         if (p != null) asrExecutor.execute { p.close() }
         translator?.close()
         translator = null
+        serverTranslator = null
+        refinements = null
         textLangId?.close()
         textLangId = null
         wakeLock?.takeIf { it.isHeld }?.release()
@@ -480,6 +528,9 @@ class SubtitleService : LifecycleService() {
         private const val CHUNK_MS = 100L
         /** ~8 giây audio tồn đọng. */
         private const val MAX_QUEUED_CHUNKS = 80
+
+        /** Số câu tối đa chờ bản dịch LLM (chưa tính câu đang dịch). */
+        private const val MAX_PENDING_REFINEMENTS = 2
 
         const val ACTION_START = "vn.livesub.START"
         const val ACTION_STOP = "vn.livesub.STOP"

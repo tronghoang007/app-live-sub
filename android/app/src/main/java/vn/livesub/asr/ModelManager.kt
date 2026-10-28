@@ -47,6 +47,11 @@ class ModelManager(private val context: Context, private val scope: CoroutineSco
 
     private var job: Job? = null
 
+    init {
+        // Model đã bỏ khỏi app: dọn file đã tải, nếu không chúng chiếm bộ nhớ mà UI không còn xoá được.
+        scope.launch(Dispatchers.IO) { RETIRED_DIRS.forEach { File(root, it).deleteRecursively() } }
+    }
+
     fun files(model: AsrModel): AsrModelFiles {
         val dir = File(root, model.dirName)
         return AsrModelFiles(
@@ -135,6 +140,9 @@ class ModelManager(private val context: Context, private val scope: CoroutineSco
     }
 
     companion object {
+        /** Whisper tiny, Whisper base và SenseVoice. */
+        private val RETIRED_DIRS = listOf("whisper-tiny", "whisper-base", "sense-voice-2025-09-09")
+
         private const val VAD_URL =
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
     }

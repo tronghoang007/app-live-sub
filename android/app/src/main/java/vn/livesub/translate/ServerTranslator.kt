@@ -1,20 +1,20 @@
 package vn.livesub.translate
 
 import android.os.SystemClock
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import vn.livesub.AppLog
 import java.net.HttpURLConnection
 import java.net.URI
 
 /**
  * Dịch câu final bằng LLM chạy trên máy tính trong mạng nội bộ (`server/livesub_server.py`).
  *
- * LLM chậm hơn ML Kit (~1–2 giây/câu) nên phụ đề tạm (partial) vẫn dịch bằng [fallback].
- * Mất kết nối thì cũng dùng [fallback] và tạm không gọi server trong [BACKOFF_MS]
- * để phụ đề không bị treo chờ timeout ở từng câu.
+ * Câu final dịch bằng [refine] (LLM). [quick] là bản [fallback] (ML Kit) cho lúc LLM không có:
+ * server lỗi hoặc không theo kịp nhịp thoại. Mất kết nối thì tạm không gọi server trong
+ * [BACKOFF_MS] để phụ đề không bị treo chờ timeout ở từng câu.
  */
 class ServerTranslator(private val fallback: SubtitleTranslator) : SubtitleTranslator {
 
@@ -39,25 +39,39 @@ class ServerTranslator(private val fallback: SubtitleTranslator) : SubtitleTrans
         if (sourceLang == targetLang) return TranslationResult.SameLanguage
         if (!isFinal || text.isBlank()) return fallback.translate(text, sourceLang, targetLang, isFinal)
         // Đang tìm server (chưa thấy) thì dịch ML Kit như bình thường, không báo lỗi.
-        val url = baseUrl ?: return fallback.translate(text, sourceLang, targetLang, isFinal)
-        if (SystemClock.elapsedRealtime() < downUntil) return viaFallback(text, sourceLang, targetLang)
+        if (baseUrl == null) return fallback.translate(text, sourceLang, targetLang, isFinal)
+        if (!canRefine()) return viaFallback(text, sourceLang, targetLang)
+        return refine(text, sourceLang, targetLang)?.let { TranslationResult.Success(it) }
+            ?: viaFallback(text, sourceLang, targetLang)
+    }
 
+    /** Server đã có địa chỉ và không đang tạm nghỉ sau lần lỗi gần nhất. */
+    fun canRefine(): Boolean = baseUrl != null && SystemClock.elapsedRealtime() >= downUntil
+
+    /**
+     * Bản dịch bằng [fallback], không bao giờ chờ server (cũng là chỗ [PhraseBook] được tra).
+     * Server đang tạm nghỉ sau lỗi thì kèm thông báo như [translate].
+     */
+    suspend fun quick(text: String, sourceLang: String, targetLang: String): TranslationResult =
+        if (baseUrl != null && !canRefine()) viaFallback(text, sourceLang, targetLang)
+        else fallback.translate(text, sourceLang, targetLang, isFinal = true)
+
+    /** Dịch câu final bằng LLM; null nếu lỗi (server tạm nghỉ [BACKOFF_MS]), khi đó giữ bản [quick]. */
+    suspend fun refine(text: String, sourceLang: String, targetLang: String): String? {
+        val url = baseUrl ?: return null
         val context = synchronized(history) { history.filter { it.lang == sourceLang } }
         return runCatching { withContext(Dispatchers.IO) { request(url, text, sourceLang, targetLang, context) } }
-            .fold(
-                onSuccess = { out ->
-                    synchronized(history) {
-                        history.addLast(Line(sourceLang, text, out))
-                        while (history.size > MAX_HISTORY) history.removeFirst()
-                    }
-                    TranslationResult.Success(out)
-                },
-                onFailure = { e ->
-                    Log.w(TAG, "server translate failed: ${e.message}")
-                    downUntil = SystemClock.elapsedRealtime() + BACKOFF_MS
-                    viaFallback(text, sourceLang, targetLang)
-                },
-            )
+            .onSuccess { out ->
+                synchronized(history) {
+                    history.addLast(Line(sourceLang, text, out))
+                    while (history.size > MAX_HISTORY) history.removeFirst()
+                }
+            }
+            .onFailure { e ->
+                AppLog.w(TAG) { "server translate failed: ${e.message}" }
+                downUntil = SystemClock.elapsedRealtime() + BACKOFF_MS
+            }
+            .getOrNull()
     }
 
     private suspend fun viaFallback(text: String, sourceLang: String, targetLang: String): TranslationResult {

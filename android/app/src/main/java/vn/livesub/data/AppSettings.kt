@@ -1,9 +1,9 @@
 package vn.livesub.data
 
-enum class AsrEngineType { WHISPER, SENSE_VOICE, TRANSDUCER }
+enum class AsrEngineType { WHISPER, TRANSDUCER }
 
 /** Vai trò của từng file trong một model nhận dạng. */
-enum class ModelPart { ENCODER, DECODER, JOINER, MODEL, TOKENS }
+enum class ModelPart { ENCODER, DECODER, JOINER, TOKENS }
 
 /**
  * Các model nhận dạng giọng nói chạy trên máy (sherpa-onnx), tải từng file từ HuggingFace.
@@ -20,29 +20,11 @@ enum class AsrModel(
     /** Thư mục lưu trên máy; giữ tên cũ "whisper-*" để không phải tải lại model đã có. */
     val dirName: String,
 ) {
-    TINY(
-        "Whisper tiny", "Nhanh nhất, kém chính xác · ~100 ngôn ngữ", 103, AsrEngineType.WHISPER,
-        "csukuangfj/sherpa-onnx-whisper-tiny",
-        mapOf(ModelPart.ENCODER to "tiny-encoder.int8.onnx", ModelPart.DECODER to "tiny-decoder.int8.onnx", ModelPart.TOKENS to "tiny-tokens.txt"),
-        null, "whisper-tiny",
-    ),
-    BASE(
-        "Whisper base", "Cân bằng · ~100 ngôn ngữ", 160, AsrEngineType.WHISPER,
-        "csukuangfj/sherpa-onnx-whisper-base",
-        mapOf(ModelPart.ENCODER to "base-encoder.int8.onnx", ModelPart.DECODER to "base-decoder.int8.onnx", ModelPart.TOKENS to "base-tokens.txt"),
-        null, "whisper-base",
-    ),
     SMALL(
-        "Whisper small", "Chính xác hơn nhưng chậm trên máy tầm trung · ~100 ngôn ngữ", 375, AsrEngineType.WHISPER,
+        "Whisper small", "Chậm trên máy tầm trung · ~100 ngôn ngữ", 375, AsrEngineType.WHISPER,
         "csukuangfj/sherpa-onnx-whisper-small",
         mapOf(ModelPart.ENCODER to "small-encoder.int8.onnx", ModelPart.DECODER to "small-decoder.int8.onnx", ModelPart.TOKENS to "small-tokens.txt"),
         null, "whisper-small",
-    ),
-    SENSE_VOICE(
-        "SenseVoice", "Rất nhanh · Nhật, Hàn, Trung, Anh, Quảng Đông", 237, AsrEngineType.SENSE_VOICE,
-        "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09",
-        mapOf(ModelPart.MODEL to "model.int8.onnx", ModelPart.TOKENS to "tokens.txt"),
-        setOf("ja", "ko", "zh", "en", "yue"), "sense-voice-2025-09-09",
     ),
     REAZON_JA(
         "ReazonSpeech", "Chuyên tiếng Nhật (học từ thoại truyền hình Nhật) · chỉ tiếng Nhật", 170, AsrEngineType.TRANSDUCER,
@@ -62,7 +44,7 @@ data class AppSettings(
     val targetLang: String = "vi",
     /** [AUTO] hoặc mã Whisper để khoá cứng ngôn ngữ nguồn. */
     val sourceLang: String = AUTO,
-    val asrModel: AsrModel = AsrModel.BASE,
+    val asrModel: AsrModel = AsrModel.SMALL,
     val textSizeSp: Float = 22f,
     /** Độ mờ nền phụ đề, 0 = trong suốt, 1 = đen đặc. */
     val backgroundAlpha: Float = 1f,

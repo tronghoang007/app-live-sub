@@ -7,8 +7,8 @@ App Android bắt âm thanh video đang phát (ví dụ phim trên Chrome), nh�
 | Khâu | Công nghệ | Ghi chú |
 |---|---|---|
 | Bắt âm thanh | `AudioPlaybackCapture` + MediaProjection | PCM16, 16 kHz, mono, chunk 100 ms |
-| Cắt câu, bỏ im lặng | Silero VAD (qua sherpa-onnx) | |
-| Nhận dạng giọng nói + nhận diện ngôn ngữ | Qua [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 2.0.1, chọn một trong các model: Whisper int8 tiny/base/small (~100 ngôn ngữ), SenseVoice int8 (Nhật/Hàn/Trung/Anh/Quảng Đông, rất nhanh), ReazonSpeech k2-v2 (chuyên tiếng Nhật) | Tải model trong app lần đầu |
+| Cắt câu, bỏ im lặng | Silero VAD (qua sherpa-onnx) | VAD chốt từng đoạn; ghép đoạn thành câu theo dấu kết câu của STT (xem [Cách ngắt câu](#cách-ngắt-câu-hoạt-động)) |
+| Nhận dạng giọng nói + nhận diện ngôn ngữ | Qua [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 2.0.1, chọn một trong các model: Whisper int8 small (~100 ngôn ngữ), ReazonSpeech k2-v2 (chuyên tiếng Nhật) | Tải model trong app lần đầu |
 | Kiểm tra chéo ngôn ngữ | Google ML Kit Language ID | |
 | Dịch | Google ML Kit Translation (on-device) | Miễn phí, offline sau khi tải gói ~30 MB/ngôn ngữ |
 
@@ -20,10 +20,14 @@ android/                         Project Android Studio (Gradle Kotlin DSL)
     audio/   PlaybackAudioCapture  – bắt âm thanh hệ thống
              SilenceMonitor        – phát hiện bị chặn capture / không có âm thanh
     asr/     ModelManager          – tải model Whisper + VAD (tải tiếp được khi rớt mạng)
-             SpeechEngine          – interface + SenseVoice, ReazonSpeech (transducer)
+             SpeechEngine          – interface + ReazonSpeech (transducer)
              WhisperAsr            – Whisper qua OfflineRecognizer của sherpa-onnx
              TextCleaner           – bỏ từ đệm, thêm dấu kết câu tiếng Nhật trước khi dịch
              SpeechPipeline        – VAD → Whisper → partial/final
+             SentenceBoundary      – dấu kết câu: đoạn VAD đã hết câu chưa, còn chỗ gộp thêm không
+             AudioHistory          – 12 s âm thanh gần nhất theo vị trí tuyệt đối (khớp `SpeechSegment.start`)
+             SpeechPadding         – tính khoảng âm thanh đệm 0,3 s trước/sau mỗi đoạn VAD
+             SpeechCutter          – chọn chỗ tự cắt đoạn nói liền quá dài, bỏ phần đã cắt khi VAD chốt
              LanguageTracker       – giữ ngôn ngữ nguồn ổn định cho cả phiên
              HallucinationFilter   – lọc câu Whisper "bịa" khi gặp nhạc/ồn
     translate/ SubtitleTranslator  – interface engine dịch
@@ -61,7 +65,7 @@ APK nằm ở `android/app/build/outputs/apk/debug/app-debug.apk`. File AAR ch�
 
 Khi mở app lần đầu:
 
-1. **Tải model nhận dạng.** Chọn *Cân bằng (base)* (~160 MB) rồi bấm **Tải**. Máy yếu nên chọn *tiny*.
+1. **Tải model nhận dạng.** Chọn một model rồi bấm **Tải**: Whisper small (~375 MB, đa ngôn ngữ) hoặc ReazonSpeech (~170 MB, chỉ tiếng Nhật). Nên dùng Wi-Fi, hoặc bật *Chỉ tải qua Wi-Fi* trong Cài đặt.
 2. Bấm **Bắt đầu**. App sẽ lần lượt xin các quyền sau:
    - **Hiển thị trên ứng dụng khác:** app mở trang cài đặt hệ thống. Bật cho LiveSub rồi quay lại app và bấm Bắt đầu lần nữa.
    - **Ghi âm:** Android bắt buộc quyền này mới bắt được âm thanh hệ thống. App không dùng micro.
@@ -95,8 +99,9 @@ Lưu ý (giả định, chưa kiểm chứng trên mọi máy): khi mirror, mộ
 
 ML Kit dịch Nhật/Hàn → Việt qua tiếng Anh nên câu thường cứng và sai xưng hô. Thư mục `server/` chứa một server nhỏ chạy LLM ngay trên Mac Apple Silicon bằng [mlx-lm](https://github.com/ml-explore/mlx-lm). Server miễn phí, chạy offline và không cần API key.
 
-- Điện thoại vẫn tự nhận dạng giọng nói, chỉ gửi **câu chữ đã nhận dạng** (không gửi âm thanh) kèm 4 câu trước làm ngữ cảnh lên máy tính trong mạng Wi-Fi.
-- Chỉ câu chốt (final) được dịch bằng LLM. Phụ đề tạm (partial) vẫn dịch bằng ML Kit cho nhanh.
+- Điện thoại vẫn tự nhận dạng giọng nói, chỉ gửi **câu chữ đã nhận dạng** (không gửi âm thanh) lên máy tính trong mạng Wi-Fi. Server mặc định không dùng câu trước làm ngữ cảnh (`MAX_CONTEXT = 0`, xem số đo bên dưới).
+- Khi server sẵn sàng, app **không hiện bản ML Kit** (hay sai nghĩa rồi mới bị thay): phụ đề tạm và câu final chỉ hiện chữ gốc, câu final được gửi lên server, bản dịch LLM về thì điền vào. Câu đã có trong `PhraseBook` vẫn dịch ngay. ML Kit chỉ còn là dự phòng: khi server lỗi, hoặc server chậm hơn nhịp thoại thì app bỏ câu cũ nhất đang chờ và dùng bản ML Kit cho nó (tối đa 2 câu chờ, không kể câu đang dịch).
+- Server không ghi log (không lưu lại chữ phụ đề của video); terminal chỉ in trạng thái khởi động.
 - Không kết nối được server thì app tự quay về ML Kit, hiện thông báo, và 15 giây sau thử gọi server lại.
 
 Chạy server (lần đầu tự tạo venv, cài `mlx-lm` và tải model ~4,6 GB vào `~/.cache/huggingface`, **nên dùng Wi-Fi**):
@@ -114,7 +119,12 @@ Nếu mạng chặn multicast (một số router, Wi-Fi công cộng) thì app k
 Lưu ý:
 - Server không có xác thực, chỉ nên chạy trong mạng nhà. Khi tự tìm, app dùng server `_livesub._tcp` đầu tiên thấy trong mạng.
 - Chưa thử tự tìm server khi Mac kết nối qua điểm phát Wi-Fi (hotspot) của chính điện thoại.
-- Chưa đo độ trễ và chất lượng dịch trên máy thật. Ước tính 1–2 giây mỗi câu với model 8B trên M1.
+- **Tốc độ** (M1 16 GB, Qwen3-8B-4bit, đo trên chính Mac, trung vị): **khoảng 1,2 giây mỗi câu**, trước đây khoảng 2,8–3,1 giây. Phần chậm là *đọc prompt* (prefill, chỉ ~70 token/giây trên M1; sinh chữ thì ~15 token/giây mà bản dịch chỉ vài chục token), nên server giữ KV cache của câu lệnh hệ thống (~125 token) và chỉ đọc đúng câu mới. Kết quả giống hệt đường không cache (19/19 câu). Chưa đo lại qua Wi-Fi từ điện thoại sau thay đổi này.
+- **Những gì đã thử và bỏ**, để khỏi thử lại:
+  - Giữ cache theo cả hội thoại (câu trước làm lượt trò chuyện): cũng ~1,2 giây nhưng mô hình bắt chước xưng hô và bịa "Bà ..." vì không biết ai đang nói.
+  - Gửi 2 câu trước làm ngữ cảnh: chậm lên ~2,0 giây mà không dịch hay hơn.
+  - Cho LLM xem bản ML Kit làm bản nháp để sửa tên riêng: sửa được `品川` nhưng cũng chép luôn lỗi của ML Kit, chậm thêm ~0,4 giây.
+- **Chất lượng** (24 câu thoại tiếng Nhật, tự đánh giá tay): LLM hay hơn ML Kit ở câu dài, nhưng còn sai tên riêng (`品川駅にいます` ra "ga Shimbashi") và từ chuyên biệt (`二番線です` ra "Hàng hai."). Đây là giới hạn của model 8B nén 4-bit.
 
 ## Đổi engine dịch
 
@@ -137,17 +147,39 @@ Whisper trên máy chỉ trả về ngôn ngữ có khả năng cao nhất cho t
 4. **Khoá cứng:** khoá trong app (mục *Ngôn ngữ trong video*) hoặc bằng nút trên overlay. Khi đã khoá, Whisper luôn dùng ngôn ngữ đó.
 5. **Cùng ngôn ngữ:** nếu ngôn ngữ nguồn trùng ngôn ngữ đích thì app không dịch, chỉ hiện phụ đề gốc.
 
+## Cách ngắt câu hoạt động
+
+Silero VAD chỉ nghe khoảng lặng, nên nghỉ lấy hơi giữa câu (≥ 0,45 s) hay đoạn bị cắt ở 6 s đều thành một đoạn riêng. Nếu mỗi đoạn là một câu phụ đề thì bản dịch bị cụt và một câu nói vỡ thành nhiều dòng. Ngoài ra Silero cắt sát chỗ nó nhận ra tiếng nói và cấu hình của nó không có tham số đệm. Khi đối chiếu log với phụ đề của video, đầu câu hay mất: video `少々 お待ちください` thành `お待ちください`, `わあ、これ何ですか` thành `これ何ですか`; cuối câu mất âm nhẹ (`ございま`). `SpeechPipeline` vì vậy lấy thêm **0,3 s âm thanh ngay trước và sau** mỗi đoạn VAD (từ `AudioHistory`, theo `segment.start`) trước khi đưa cho engine, và dùng đoạn đệm này cả cho partial. Nếu `start` không khớp âm thanh VAD trả về thì app bỏ đệm và ghi cảnh báo vào log. Đoạn bị cắt cứng ở 6 s không đệm cuối, để không lặp lại phần đầu đoạn kế. Nguyên nhân mất đầu/cuối câu mới là suy luận từ log, chưa xác nhận bằng âm thanh gốc.
+
+`SpeechPipeline` cũng không chốt câu ngay khi VAD chốt đoạn:
+
+1. **Nhận dạng đoạn vừa chốt**, rồi xét chữ bằng `SentenceBoundary`:
+   - Đoạn nói liền không có chỗ nghỉ: VAD được cấu hình cắt ở 6 s nhưng đo trên máy có đoạn 7–15 s, nên app **tự cắt** ở chỗ lặng nhất khi đoạn đã dài 7 s (`SpeechCutter`) và bỏ phần đã cắt khi VAD chốt. Đoạn bị cắt kiểu này **hiện thành câu ngay, không giữ chờ ghép**: trước đây giữ lại thì phụ đề đứng hình gần 14 giây ở câu nói liền 15,7 giây.
+   - Chữ kết thúc bằng dấu kết câu (`。！？!?.…`, bỏ qua ngoặc đóng): hết câu, chốt final ngay.
+   - Chữ không có dấu kết câu (hay gặp là dấu phẩy hoặc bỏ lửng): câu chưa dứt.
+   - ReazonSpeech không xuất dấu câu, nên khoảng lặng là hết câu, trừ khi chữ dừng ở trợ từ (`は が を に へ と も や`, ví dụ "私は" rồi mới tới "学校の学生です"). Lời chào `こんにちは`, `こんばんは`, `どうも` vẫn tính là câu trọn.
+2. **Câu chưa dứt thì giữ lại**: chữ vẫn hiện ngay dưới dạng phụ đề tạm (màu xám). Đoạn VAD kế tiếp được ghép vào âm thanh đã giữ và **nhận dạng lại cả câu**, nên chỗ bị cắt giữa từ cũng được nghe lại liền mạch. Partial trong lúc đó cũng giải mã từ đầu câu.
+3. **Chốt final** khi chữ đã có dấu kết câu, hoặc sau **0,7 s** không có giọng nói mới (cộng 0,45 s lặng của VAD), hoặc khi ghép thêm sẽ vượt **8 s** giọng nói. 8 s là mức tạm chọn để bản dịch còn vừa khung 3 dòng. Câu vượt mức này bị chốt riêng như trước.
+
+Chỉ câu final mới dịch bằng server LLM nên bản dịch giờ là cả câu thay vì từng mảnh.
+
+Đánh đổi: câu bị bỏ lửng (không có dấu kết câu) ra final chậm hơn 0,7 s. Chữ và bản dịch ML Kit của nó vẫn hiện sớm dưới dạng phụ đề tạm. Các hằng số `HOLD_SAMPLES`, `CUT_MARGIN_SEC` (`SpeechPipeline`) và `MAX_SENTENCE_SEC` (`SentenceBoundary`) là giá trị ước lượng, **chưa chỉnh trên máy thật**.
+
 ## Độ trễ và log
 
-Xem thời gian từng bước bằng lệnh:
+Chỉ **bản debug** ghi logcat (`AppLog`). Bản release không ghi dòng log nào của app, vì log có cả chữ nhận dạng từ video người dùng xem; lỗi làm app dừng đột ngột vẫn được lưu để hiện ở lần mở sau (`CrashLog`). Xem thời gian từng bước ở bản debug bằng lệnh:
 
 ```bash
 adb logcat -s SpeechPipeline SubtitleService
-# final #12 2.3s asr=640ms lid+redecode=15ms lang=ja conf=1.00 text=...
+# (số liệu dưới đây chỉ minh hoạ định dạng log, không phải kết quả đo)
+# chunk #12 2.3s (mới 1.1s) asr=640ms lid+redecode=15ms rtf=0.28 lang=ja conf=1.00 cut=false giữ text=昨日ね、
+# chunk #12 3.4s (mới 1.1s) asr=720ms lid+redecode=0ms rtf=0.27 lang=ja conf=1.00 cut=false final text=昨日ね、駅で会ったよ。
 # translate #12 ja->vi 38ms
 ```
 
-Tổng độ trễ ≈ khoảng lặng để chốt câu (0,45 s) + thời gian ASR + thời gian dịch. Thời gian ASR phụ thuộc rất nhiều vào máy và model, nên hãy đo trên máy thật. Nếu máy không xử lý kịp, app sẽ báo "Máy xử lý không kịp" và bỏ bớt âm thanh (tối đa 8 giây tồn đọng) thay vì để phụ đề trễ dần. Khi đó, hãy chọn model nhỏ hơn hoặc tắt phụ đề tạm.
+Mỗi dòng `chunk` là một lần VAD chốt đoạn: `giữ` nghĩa là câu chưa dứt và được giữ lại để ghép, `final` là đã chốt. `cut=true` là đoạn bị cắt ở độ dài tối đa của VAD.
+
+Tổng độ trễ ≈ khoảng lặng để chốt đoạn (0,45 s) + thời gian ASR + thời gian dịch, cộng thêm 0,7 s nếu chữ chưa có dấu kết câu. Thời gian ASR phụ thuộc rất nhiều vào máy và model, nên hãy đo trên máy thật. Nếu máy không xử lý kịp, app sẽ báo "Máy xử lý không kịp" và bỏ bớt âm thanh (tối đa 8 giây tồn đọng) thay vì để phụ đề trễ dần. Khi đó, hãy tắt phụ đề tạm hoặc đổi model.
 
 ## Lỗi thường gặp
 
@@ -166,9 +198,9 @@ Tổng độ trễ ≈ khoảng lặng để chốt câu (0,45 s) + thời gian 
 ## Giả định và khác biệt so với yêu cầu ban đầu
 
 - **Server chỉ dùng để dịch, không nhận dạng giọng nói.** Nhận dạng vẫn chạy trên điện thoại. Server dịch (`server/`) là tuỳ chọn, chạy LLM local bằng mlx-lm trên Mac, không dùng FastAPI/Docker hay API trả phí.
-- **Model nhỏ hơn.** Điện thoại không chạy được Whisper `large-v3` theo thời gian thực, nên app dùng tiny/base/small. Độ chính xác thấp hơn, nhất là khi có nhạc nền hoặc thoại chồng.
-- **Engine dịch.** Thay cho lựa chọn "engine dịch", màn hình chính cho chọn **model nhận dạng** (Nhanh/Cân bằng/Chính xác), vì dịch chỉ còn ML Kit. ML Kit dịch kém tự nhiên hơn LLM, đặc biệt Nhật/Hàn → Việt (thường dịch qua tiếng Anh làm trung gian, không xử lý tốt xưng hô hay chủ ngữ bị lược).
+- **Model nhỏ hơn.** Điện thoại không chạy được Whisper `large-v3` theo thời gian thực, nên app dùng Whisper small. Độ chính xác thấp hơn, nhất là khi có nhạc nền hoặc thoại chồng.
+- **Engine dịch.** Thay cho lựa chọn "engine dịch", màn hình chính cho chọn **model nhận dạng**, vì dịch chỉ còn ML Kit. ML Kit dịch kém tự nhiên hơn LLM, đặc biệt Nhật/Hàn → Việt (thường dịch qua tiếng Anh làm trung gian, không xử lý tốt xưng hô hay chủ ngữ bị lược).
 - **Ngưỡng 0,6.** Độ tin cậy nhận diện ngôn ngữ là tỉ lệ phiếu theo thời lượng (xem mục trên), không phải `language_probability` của faster-whisper.
-- **Partial.** Whisper không phải mô hình streaming. Partial được tạo bằng cách giải mã lại đoạn âm thanh từ đầu câu, mỗi ~1 giây, và tự bỏ qua khi máy đang tồn đọng âm thanh.
+- **Partial.** Whisper không phải mô hình streaming. Partial được tạo bằng cách giải mã lại đoạn âm thanh từ đầu câu, mỗi 0,5–1 giây (engine nhanh cập nhật dày hơn, bắt đầu từ 0,6 s giọng nói), và tự bỏ qua khi máy đang tồn đọng âm thanh.
 - **Kiểu foreground service.** Service khai báo `mediaProjection|microphone`. Kiểu `microphone` được thêm để AudioRecord không bị tắt tiếng khi app chạy nền trên một số ROM.
 - **Chạm xuyên overlay.** Cửa sổ phụ đề đặt `alpha = 0.8`, vì Android 12+ chặn chạm đi xuyên qua overlay có độ đục lớn hơn 0.8. Do đó chữ hơi trong hơn một chút so với 100%.

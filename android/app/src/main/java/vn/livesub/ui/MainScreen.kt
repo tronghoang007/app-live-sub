@@ -372,7 +372,7 @@ private fun ModelCard(
             ModelDownloadState.Idle -> Unit
         }
         Text(
-            "Xem phim Nhật: thử ReazonSpeech hoặc SenseVoice. Ngôn ngữ khác (Thái, Indonesia...): dùng Whisper.",
+            "Xem phim Nhật: thử ReazonSpeech. Ngôn ngữ khác (Hàn, Trung, Thái, Indonesia...): dùng Whisper.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
