@@ -10,5 +10,6 @@ if [ ! -x .venv/bin/python ]; then
     .venv/bin/pip install -q -r requirements.txt
 fi
 ip=$(ipconfig getifaddr en0 2>/dev/null || true)
-[ -n "$ip" ] && echo "IP máy này trong mạng Wi-Fi: $ip  → nhập \"$ip:8765\" vào app (Cài đặt → Server dịch)"
+# App tự tìm server qua Bonjour; IP chỉ cần khi tự tìm không được (vd. mạng chặn multicast).
+[ -n "$ip" ] && echo "IP máy này trong mạng Wi-Fi: $ip (dự phòng nếu app không tự tìm thấy)"
 exec .venv/bin/python -W ignore livesub_server.py "$@"

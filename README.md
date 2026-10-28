@@ -29,6 +29,7 @@ android/                         Project Android Studio (Gradle Kotlin DSL)
     translate/ SubtitleTranslator  – interface engine dịch
              MlKitTranslator       – dịch ML Kit, tự tải model khi cần
              ServerTranslator      – dịch câu final bằng server LLM trên máy tính, lỗi thì dùng ML Kit
+             ServerDiscovery       – tự tìm server trong mạng qua mDNS (NsdManager)
              TextLanguageIdentifier – ML Kit Language ID
     overlay/ SubtitleOverlay       – cửa sổ phụ đề + tay nắm (khoá ngôn ngữ, kéo vị trí)
     service/ SubtitleService       – ForegroundService (mediaProjection) điều phối pipeline
@@ -65,7 +66,7 @@ Khi mở app lần đầu:
    - **Hiển thị trên ứng dụng khác:** app mở trang cài đặt hệ thống. Bật cho LiveSub rồi quay lại app và bấm Bắt đầu lần nữa.
    - **Ghi âm:** Android bắt buộc quyền này mới bắt được âm thanh hệ thống. App không dùng micro.
    - **Thông báo** (Android 13+): không bắt buộc, nhưng có nó thì dừng nhanh được từ thanh thông báo.
-   - **Chia sẻ màn hình:** hỏi lại mỗi lần bắt đầu. Chọn **Toàn bộ màn hình**. Trên Android 14+, app đã tự ép chế độ toàn màn hình.
+   - **Chia sẻ màn hình:** hỏi lại mỗi lần bắt đầu. Trên Android 14+ có thể chọn **Toàn bộ màn hình** hoặc **Một ứng dụng** (chọn app đang phát video, ví dụ Chrome). App chỉ dùng quyền này để bắt âm thanh.
 3. Mở Chrome và phát video. Phụ đề hiện ở đáy màn hình.
 
 Xiaomi/HyperOS, Oppo/ColorOS, Vivo… còn cần thêm hai bước:
@@ -106,10 +107,13 @@ cd server
 ./run.sh --model mlx-community/gemma-3-12b-it-4bit   # model khác trên HuggingFace mlx-community
 ```
 
-Script in ra IP của máy. Trên điện thoại, mở **Cài đặt → Server dịch trên máy tính**, nhập `IP:8765`, bấm **Lưu và kiểm tra kết nối**. Cài đặt có hiệu lực từ phiên phụ đề tiếp theo. Lần đầu macOS có thể hỏi có cho Python nhận kết nối mạng không: chọn **Cho phép**.
+Trên điện thoại, mở **Cài đặt → Server dịch trên máy tính** và bật **Dịch bằng server trên máy tính**. Không cần nhập IP: server tự quảng bá qua Bonjour/mDNS (`_livesub._tcp`, bằng `dns-sd` có sẵn trên macOS), app tự tìm thấy và hiện tên máy. Trong phiên phụ đề, app tìm server liên tục, nên bật server sau cũng được. Khi kết nối được, overlay hiện "Đã kết nối server dịch".
+
+Nếu mạng chặn multicast (một số router, Wi-Fi công cộng) thì app không tự tìm được. Khi đó nhập `IP:8765` vào ô **Địa chỉ nhập tay**, IP do `run.sh` in ra. Bật/tắt có hiệu lực từ phiên phụ đề tiếp theo. Lần đầu macOS có thể hỏi có cho Python nhận kết nối mạng không: chọn **Cho phép**.
 
 Lưu ý:
-- Server không có xác thực, chỉ nên chạy trong mạng nhà.
+- Server không có xác thực, chỉ nên chạy trong mạng nhà. Khi tự tìm, app dùng server `_livesub._tcp` đầu tiên thấy trong mạng.
+- Chưa thử tự tìm server khi Mac kết nối qua điểm phát Wi-Fi (hotspot) của chính điện thoại.
 - Chưa đo độ trễ và chất lượng dịch trên máy thật. Ước tính 1–2 giây mỗi câu với model 8B trên M1.
 
 ## Đổi engine dịch
@@ -154,7 +158,8 @@ Tổng độ trễ ≈ khoảng lặng để chốt câu (0,45 s) + thời gian 
 | Không thấy phụ đề | Kiểm tra quyền "Hiển thị trên ứng dụng khác". Một số trình phát bảo vệ nội dung (FLAG_SECURE) che cả overlay khi mirror. |
 | Phụ đề ra câu lạ khi có nhạc | Whisper "bịa" câu khi gặp nhạc. App đã lọc những mẫu phổ biến. Nếu vẫn sai ngôn ngữ, bấm **Khoá ngôn ngữ**. |
 | Service tự tắt sau một lúc | Tắt tối ưu pin và bật quyền chạy nền (xem phần Cấp quyền). |
-| Chọn "Một ứng dụng" khi chia sẻ màn hình (Android 14) | Có thể không bắt được âm thanh. App đã ép chế độ toàn màn hình, nhưng nếu ROM vẫn cho chọn thì hãy chọn **Toàn bộ màn hình**. |
+| Chọn "Một ứng dụng" khi chia sẻ màn hình (Android 14+) | Chưa kiểm chứng trên mọi máy là có bắt được âm thanh không. Nếu app báo không có âm thanh, hãy thử **Toàn bộ màn hình**. Đóng app đang được chia sẻ cũng làm phiên phụ đề dừng. |
+| App bị dừng đột ngột | Mở lại app: màn hình chính hiện thẻ "Lần trước app bị dừng đột ngột" kèm chi tiết lỗi. Bấm **Sao chép** rồi gửi nội dung đó để sửa lỗi. |
 | Tải model thất bại | Kiểm tra mạng rồi bấm **Tải** lại. Tải tiếp từ chỗ dừng. Nếu bật "Chỉ tải qua Wi-Fi" thì phải có Wi-Fi. |
 | "Không nạp được model" | File model bị hỏng. Vào Cài đặt → xoá model → tải lại. |
 

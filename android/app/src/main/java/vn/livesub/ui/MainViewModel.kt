@@ -21,6 +21,8 @@ import vn.livesub.data.AsrModel
 import vn.livesub.data.Languages
 import vn.livesub.service.SessionState
 import vn.livesub.service.SessionStatus
+import vn.livesub.translate.DiscoveredServer
+import vn.livesub.translate.ServerDiscovery
 import vn.livesub.translate.ServerTranslator
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -56,12 +58,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteModel(size: AsrModel) = container.models.delete(size)
 
-    /** Lưu địa chỉ server dịch rồi thử gọi /health. Rỗng = tắt, chỉ dùng ML Kit. */
+    /** Server dịch tìm thấy qua mDNS; chỉ tìm khi màn hình Cài đặt đang theo dõi. */
+    val discoveredServer: StateFlow<DiscoveredServer?> = ServerDiscovery(app).servers()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Lưu địa chỉ server dịch nhập tay rồi thử gọi /health. Rỗng = tự tìm trong mạng. */
     fun saveTranslationServer(input: String) {
         val url = ServerTranslator.normalizeUrl(input)
-        update { it.copy(translationServer = if (url == null) "" else input.trim()) }
+        if (input.isNotBlank() && url == null) {
+            _serverCheck.value = "Địa chỉ không hợp lệ."
+            return
+        }
+        update { it.copy(translationServer = input.trim()) }
         if (url == null) {
-            _serverCheck.value = if (input.isBlank()) "Đã tắt server dịch, dùng ML Kit." else "Địa chỉ không hợp lệ."
+            _serverCheck.value = "Đã xoá địa chỉ, app sẽ tự tìm server trong mạng."
             return
         }
         _serverCheck.value = "Đang kết nối $url…"

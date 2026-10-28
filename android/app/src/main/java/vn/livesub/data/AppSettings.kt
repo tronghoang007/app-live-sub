@@ -83,7 +83,9 @@ data class AppSettings(
     val alwaysShowBox: Boolean = true,
     val clearAfterMs: Long = 3500,
     val wifiOnlyDownloads: Boolean = false,
-    /** Địa chỉ server dịch LLM trên máy tính (vd. "192.168.1.5:8765"); rỗng = chỉ dùng ML Kit. */
+    /** Dịch câu final bằng server LLM trên máy tính cùng mạng (xem server/). */
+    val useTranslationServer: Boolean = false,
+    /** Địa chỉ server nhập tay (vd. "192.168.1.5:8765"); rỗng = tự tìm qua mDNS. */
     val translationServer: String = "",
 ) {
     companion object {

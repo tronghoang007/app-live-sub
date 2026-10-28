@@ -37,8 +37,8 @@ android {
         applicationId = "vn.livesub"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
 
         ndk {
             // x86_64 để chạy thử trên emulator; bỏ đi nếu muốn APK nhỏ hơn.
@@ -48,7 +48,9 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
+            // Tắt R8: app cài tay, R8 chỉ bớt vài MB (phần lớn APK là thư viện native) nhưng dễ gây
+            // lỗi chỉ có ở bản release và làm stack trace trong CrashLog khó đọc.
+            isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Ký bằng debug key để cài thử nhanh; thay bằng keystore riêng khi phát hành.
             signingConfig = signingConfigs.getByName("debug")

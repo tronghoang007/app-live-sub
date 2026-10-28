@@ -16,15 +16,21 @@ import java.net.URI
  * Mất kết nối thì cũng dùng [fallback] và tạm không gọi server trong [BACKOFF_MS]
  * để phụ đề không bị treo chờ timeout ở từng câu.
  */
-class ServerTranslator(
-    private val baseUrl: String,
-    private val fallback: SubtitleTranslator,
-) : SubtitleTranslator {
+class ServerTranslator(private val fallback: SubtitleTranslator) : SubtitleTranslator {
+
+    /** Địa chỉ server, nhập tay hoặc do [ServerDiscovery] tìm thấy; null = chưa có, dịch bằng [fallback]. */
+    @Volatile
+    var baseUrl: String? = null
+        set(value) {
+            if (value != field) downUntil = 0L
+            field = value
+        }
 
     private data class Line(val lang: String, val src: String, val dst: String)
 
     /** Vài câu gần nhất gửi kèm để LLM chọn xưng hô, giọng điệu cho đúng. */
     private val history = ArrayDeque<Line>()
+    @Volatile
     private var downUntil = 0L
 
     override fun prepare(sourceLang: String, targetLang: String) = fallback.prepare(sourceLang, targetLang)
@@ -32,10 +38,12 @@ class ServerTranslator(
     override suspend fun translate(text: String, sourceLang: String, targetLang: String, isFinal: Boolean): TranslationResult {
         if (sourceLang == targetLang) return TranslationResult.SameLanguage
         if (!isFinal || text.isBlank()) return fallback.translate(text, sourceLang, targetLang, isFinal)
+        // Đang tìm server (chưa thấy) thì dịch ML Kit như bình thường, không báo lỗi.
+        val url = baseUrl ?: return fallback.translate(text, sourceLang, targetLang, isFinal)
         if (SystemClock.elapsedRealtime() < downUntil) return viaFallback(text, sourceLang, targetLang)
 
         val context = synchronized(history) { history.filter { it.lang == sourceLang } }
-        return runCatching { withContext(Dispatchers.IO) { request(text, sourceLang, targetLang, context) } }
+        return runCatching { withContext(Dispatchers.IO) { request(url, text, sourceLang, targetLang, context) } }
             .fold(
                 onSuccess = { out ->
                     synchronized(history) {
@@ -57,7 +65,7 @@ class ServerTranslator(
         return if (result is TranslationResult.Success) result.copy(note = SERVER_DOWN_NOTE) else result
     }
 
-    private fun request(text: String, source: String, target: String, context: List<Line>): String {
+    private fun request(baseUrl: String, text: String, source: String, target: String, context: List<Line>): String {
         val body = JSONObject()
             .put("text", text)
             .put("source", source)

@@ -22,6 +22,7 @@ class LiveSubApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         container = AppContainer(this)
         val channel = NotificationChannel(CHANNEL_ID, "Phụ đề trực tiếp", NotificationManager.IMPORTANCE_LOW).apply {
             description = "Trạng thái phiên phụ đề và nút dừng"

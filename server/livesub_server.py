@@ -2,6 +2,7 @@
 
 Điện thoại vẫn tự nhận dạng giọng nói; chỉ gửi câu đã nhận dạng (kèm vài câu trước
 làm ngữ cảnh) lên đây để dịch. Chỉ dùng trong mạng nội bộ: không có xác thực.
+Server tự quảng bá qua Bonjour (`_livesub._tcp`) để app tìm thấy mà không cần nhập IP.
 
     GET  /health     -> {"ok": true, "model": "..."}
     POST /translate  {"text", "source", "target", "context": [{"src", "dst"}]}
@@ -11,6 +12,9 @@ làm ngữ cảnh) lên đây để dịch. Chỉ dùng trong mạng nội bộ:
 import argparse
 import json
 import re
+import shutil
+import socket
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -128,8 +132,29 @@ def main():
     # Chạy thử một câu để nạp hết trọng số lên GPU trước khi điện thoại gọi.
     Handler.translator.translate("こんにちは", "ja", "vi", [])
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"Sẵn sàng tại http://{args.host}:{args.port}  (nhập IP:port của máy này vào app)", flush=True)
-    server.serve_forever()
+    bonjour = advertise(args.port, args.model)
+    print(f"Sẵn sàng tại http://{args.host}:{args.port}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if bonjour:
+            bonjour.terminate()
+
+
+def advertise(port, model):
+    """Quảng bá server qua Bonjour bằng `dns-sd` có sẵn trên macOS; tiến trình sống tới khi server tắt."""
+    if not shutil.which("dns-sd"):
+        print("Không có dns-sd: app sẽ không tự tìm thấy server, hãy nhập IP:port bằng tay.", flush=True)
+        return None
+    name = f"LiveSub {socket.gethostname().split('.')[0]}"[:63]
+    print(f"Đang quảng bá \"{name}\" (_livesub._tcp) để app tự tìm thấy", flush=True)
+    return subprocess.Popen(
+        ["dns-sd", "-R", name, "_livesub._tcp", "local", str(port), f"model={model.split('/')[-1]}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 if __name__ == "__main__":

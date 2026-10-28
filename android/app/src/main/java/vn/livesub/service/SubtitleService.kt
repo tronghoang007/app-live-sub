@@ -46,6 +46,7 @@ import vn.livesub.data.AppSettings
 import vn.livesub.overlay.SubtitleEvent
 import vn.livesub.overlay.SubtitleOverlay
 import vn.livesub.translate.MlKitTranslator
+import vn.livesub.translate.ServerDiscovery
 import vn.livesub.translate.ServerTranslator
 import vn.livesub.translate.SubtitleTranslator
 import vn.livesub.translate.TextLanguageIdentifier
@@ -109,13 +110,18 @@ class SubtitleService : LifecycleService() {
         SessionState.update { it.copy(phase = SessionPhase.STARTING) }
 
         // Android 14+: phải vào foreground với type mediaProjection TRƯỚC khi getMediaProjection().
-        val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        try {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), types)
-        } catch (e: Exception) {
-            Log.e(TAG, "startForeground failed", e)
-            stopSession(Notice(Notice.Level.ERROR, "Không khởi động được dịch vụ nền: ${e.message}"))
+        // Một số ROM từ chối thêm type microphone; khi đó thử lại chỉ với mediaProjection, vì
+        // service dừng mà chưa vào foreground thì hệ thống ép app thoát (không bắt được).
+        val started = listOf(
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+        ).any { types ->
+            runCatching { ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), types) }
+                .onFailure { Log.e(TAG, "startForeground($types) failed", it) }
+                .isSuccess
+        }
+        if (!started) {
+            stopSession(Notice(Notice.Level.ERROR, "Không khởi động được dịch vụ nền."))
             return
         }
 
@@ -183,9 +189,9 @@ class SubtitleService : LifecycleService() {
         }
         val langId = TextLanguageIdentifier().also { textLangId = it }
         val mlKit = MlKitTranslator(lifecycleScope, s.wifiOnlyDownloads)
-        translator = ServerTranslator.normalizeUrl(s.translationServer)
-            ?.let { ServerTranslator(it, fallback = mlKit) }
-            ?: mlKit
+        val manualServer = ServerTranslator.normalizeUrl(s.translationServer)
+        val serverTranslator = if (s.useTranslationServer) ServerTranslator(mlKit).apply { baseUrl = manualServer } else null
+        translator = serverTranslator ?: mlKit
 
         val p = try {
             withContext(asrDispatcher) {
@@ -217,6 +223,17 @@ class SubtitleService : LifecycleService() {
             }
 
             launch { p.segments.collect { onSegment(it) } }
+
+            // Không nhập địa chỉ thì tự tìm server trong mạng suốt phiên (server có thể bật sau).
+            if (serverTranslator != null && manualServer == null) {
+                launch {
+                    ServerDiscovery(this@SubtitleService).servers().collect { found ->
+                        serverTranslator.baseUrl = found?.url
+                        // Thông báo tự tắt ở câu dịch thành công kế tiếp.
+                        if (found != null) showTranslationNotice(Notice(Notice.Level.INFO, "Đã kết nối server dịch: ${found.name}"))
+                    }
+                }
+            }
 
             val audio = Channel<ShortArray>(Channel.UNLIMITED)
             launch(asrDispatcher) {

@@ -36,6 +36,7 @@ class SettingsRepository(private val context: Context) {
         val alwaysShowBox = booleanPreferencesKey("always_show_box")
         val clearAfter = longPreferencesKey("clear_after_ms")
         val wifiOnly = booleanPreferencesKey("wifi_only")
+        val useTranslationServer = booleanPreferencesKey("use_translation_server")
         val translationServer = stringPreferencesKey("translation_server")
     }
 
@@ -60,6 +61,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.alwaysShowBox] = s.alwaysShowBox
             prefs[Keys.clearAfter] = s.clearAfterMs
             prefs[Keys.wifiOnly] = s.wifiOnlyDownloads
+            prefs[Keys.useTranslationServer] = s.useTranslationServer
             prefs[Keys.translationServer] = s.translationServer
         }
     }
@@ -83,6 +85,7 @@ class SettingsRepository(private val context: Context) {
             alwaysShowBox = this[Keys.alwaysShowBox] ?: d.alwaysShowBox,
             clearAfterMs = this[Keys.clearAfter] ?: d.clearAfterMs,
             wifiOnlyDownloads = this[Keys.wifiOnly] ?: d.wifiOnlyDownloads,
+            useTranslationServer = this[Keys.useTranslationServer] ?: d.useTranslationServer,
             translationServer = this[Keys.translationServer] ?: d.translationServer,
         )
     }

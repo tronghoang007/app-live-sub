@@ -2,10 +2,11 @@ package vn.livesub.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -46,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -53,6 +55,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import vn.livesub.CrashLog
 import vn.livesub.asr.ModelDownloadState
 import vn.livesub.data.AppSettings
 import vn.livesub.data.AsrModel
@@ -83,6 +86,7 @@ fun MainScreen(vm: MainViewModel, onOpenSettings: () -> Unit) {
     var notifGranted by remember { mutableStateOf(context.notificationsAllowed()) }
     var notifAsked by rememberSaveable { mutableStateOf(false) }
     var dialog by remember { mutableStateOf<PermissionDialog?>(null) }
+    var lastCrash by remember { mutableStateOf(CrashLog.read(context)) }
 
     // Người dùng quay lại từ màn hình cài đặt hệ thống: kiểm tra lại quyền.
     LifecycleResumeEffect(Unit) {
@@ -156,6 +160,28 @@ fun MainScreen(vm: MainViewModel, onOpenSettings: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            lastCrash?.let { crash ->
+                SectionCard("Lần trước app bị dừng đột ngột") {
+                    Text(
+                        "Bấm Sao chép rồi gửi nội dung này cho người phát triển để sửa lỗi.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(crash.lines().take(25).joinToString("\n"), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            context.getSystemService(ClipboardManager::class.java)
+                                .setPrimaryClip(ClipData.newPlainText("LiveSub crash", crash))
+                            toast("Đã sao chép nội dung lỗi.")
+                        }) { Text("Sao chép") }
+                        TextButton(onClick = {
+                            CrashLog.dismiss(context)
+                            lastCrash = null
+                        }) { Text("Đóng") }
+                    }
+                }
+            }
+
             SessionCard(
                 phase = session.phase,
                 sourceLang = session.sourceLang,
@@ -206,8 +232,9 @@ fun MainScreen(vm: MainViewModel, onOpenSettings: () -> Unit) {
                     }
                 }
                 Text(
-                    "Quyền chia sẻ màn hình được hỏi mỗi lần bấm Bắt đầu. Hãy chọn \"Toàn bộ màn hình\". " +
-                        "App chỉ dùng nó để bắt âm thanh, không ghi hình; âm thanh được xử lý ngay trên máy.",
+                    "Quyền chia sẻ màn hình được hỏi mỗi lần bấm Bắt đầu. Chọn \"Toàn bộ màn hình\" hoặc \"Một ứng dụng\" " +
+                        "(app đang phát video, vd. Chrome) đều được. App chỉ dùng nó để bắt âm thanh, không ghi hình; " +
+                        "âm thanh được xử lý ngay trên máy.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -378,12 +405,7 @@ private fun Context.hasPermission(permission: String) =
 private fun Context.notificationsAllowed() =
     Build.VERSION.SDK_INT < 33 || hasPermission(Manifest.permission.POST_NOTIFICATIONS)
 
-private fun Context.screenCaptureIntent(): Intent {
-    val mpm = getSystemService(MediaProjectionManager::class.java)
-    // Android 14+ cho chọn "chỉ một ứng dụng"; ép toàn màn hình để chắc chắn bắt được âm thanh của Chrome.
-    return if (Build.VERSION.SDK_INT >= 34) {
-        mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
-    } else {
-        mpm.createScreenCaptureIntent()
-    }
-}
+// Android 14+ cho chọn "Toàn bộ màn hình" hoặc "Một ứng dụng"; app chỉ dùng quyền này để
+// bắt âm thanh nên chọn kiểu nào cũng được.
+private fun Context.screenCaptureIntent(): Intent =
+    getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent()

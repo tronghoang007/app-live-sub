@@ -109,23 +109,35 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
             }
 
             SectionCard("Server dịch trên máy tính") {
-                Text(
-                    "Dịch bằng LLM chạy trên máy tính cùng mạng Wi-Fi (xem server/README.md), tự nhiên hơn ML Kit. " +
-                        "Phụ đề tạm vẫn dịch bằng ML Kit; khi mất kết nối, app tự quay về ML Kit. Áp dụng từ phiên sau.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                LabeledSwitch(
+                    label = "Dịch bằng server trên máy tính",
+                    description = "LLM chạy trên máy tính cùng mạng (thư mục server/), dịch tự nhiên hơn ML Kit. " +
+                        "Phụ đề tạm vẫn dịch bằng ML Kit; chưa thấy server hoặc mất kết nối thì tự dùng ML Kit. " +
+                        "Áp dụng từ phiên sau.",
+                    checked = s.useTranslationServer,
+                    onChange = { v -> vm.update { it.copy(useTranslationServer = v) } },
                 )
-                var address by remember(s.translationServer) { mutableStateOf(s.translationServer) }
-                OutlinedTextField(
-                    value = address,
-                    onValueChange = { address = it },
-                    label = { Text("Địa chỉ (vd. 192.168.1.5:8765)") },
-                    placeholder = { Text("Để trống = chỉ dùng ML Kit") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedButton(onClick = { vm.saveTranslationServer(address) }) { Text("Lưu và kiểm tra kết nối") }
-                serverCheck?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                if (s.useTranslationServer) {
+                    var address by remember(s.translationServer) { mutableStateOf(s.translationServer) }
+                    if (s.translationServer.isBlank()) {
+                        val found by vm.discoveredServer.collectAsStateWithLifecycle()
+                        Text(
+                            found?.let { "Đã tìm thấy: ${it.name} (${it.url.removePrefix("http://")})" + (it.model?.let { m -> " · $m" } ?: "") }
+                                ?: "Đang tìm server trong mạng… Hãy chạy server/run.sh trên máy tính và dùng chung mạng Wi-Fi.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedTextField(
+                        value = address,
+                        onValueChange = { address = it },
+                        label = { Text("Địa chỉ nhập tay (tuỳ chọn)") },
+                        placeholder = { Text("Để trống = tự tìm, vd. 192.168.1.5:8765") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedButton(onClick = { vm.saveTranslationServer(address) }) { Text("Lưu và kiểm tra kết nối") }
+                    serverCheck?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
             }
 
             SectionCard("Tải xuống") {
