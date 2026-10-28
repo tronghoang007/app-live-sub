@@ -3,6 +3,7 @@
 Điện thoại vẫn tự nhận dạng giọng nói; chỉ gửi câu đã nhận dạng (kèm vài câu trước
 làm ngữ cảnh) lên đây để dịch. Chỉ dùng trong mạng nội bộ: không có xác thực.
 Server tự quảng bá qua Bonjour (`_livesub._tcp`) để app tìm thấy mà không cần nhập IP.
+Không ghi log câu dịch (chữ phụ đề của video không được lưu lại); terminal chỉ in trạng thái khởi động.
 
     GET  /health     -> {"ok": true, "model": "..."}
     POST /translate  {"text", "source", "target", "context": [{"src", "dst"}]}
@@ -17,9 +18,12 @@ import socket
 import subprocess
 import threading
 import time
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from mlx_lm import generate, load
+import mlx.core as mx
+from mlx_lm import generate, load, stream_generate
+from mlx_lm.models.cache import make_prompt_cache, trim_prompt_cache
 
 DEFAULT_MODEL = "mlx-community/Qwen3-8B-4bit"
 
@@ -33,12 +37,35 @@ LANG_NAMES = {
 SYSTEM_PROMPT = (
     "You translate film and video subtitles from {src} into natural, spoken {tgt}. "
     "The source line comes from speech recognition and may contain small errors: translate the most plausible meaning. "
-    "Use the previous lines only as context to pick pronouns, forms of address and tone; "
+    "Use the earlier lines of the same video only as context to pick pronouns, forms of address and tone; "
     "{src} often omits the subject, so do not add one unless {tgt} needs it. "
+    "Write numbers, times and names exactly as spoken, and reply only in {tgt}: never leave words of another language except proper names. "
     "Keep it as short as a subtitle. Reply with the translation only: no quotes, notes or romanization."
 )
 
-MAX_CONTEXT = 4
+# Số câu trước gửi kèm làm ngữ cảnh. Đo trên M1: 2 dòng làm chậm từ ~1,3 lên ~2,0 giây mà không dịch
+# hay hơn, nên mặc định không dùng. Giữ KV cache theo hội thoại thì nhanh nhưng mô hình bắt chước
+# xưng hô sai ("Bà ...") vì không biết ai đang nói, nên cũng bỏ.
+MAX_CONTEXT = 0
+
+# Qwen3 (ChatML): phần kết lượt của người dùng và mở đầu câu trả lời, có khối suy nghĩ rỗng.
+ANSWER_START = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+# Số cặp ngôn ngữ giữ cache câu lệnh hệ thống (~15 MB mỗi cặp).
+MAX_PREFIXES = 4
+
+
+class Prefix:
+    """KV cache của câu lệnh hệ thống cho một cặp ngôn ngữ.
+
+    Trên M1 phần đọc prompt (prefill) chỉ ~70 token/giây, chậm hơn nhiều so với phần sinh chữ
+    (~15 token/giây, mà bản dịch chỉ vài chục token). Câu lệnh hệ thống ~95 token nên đọc lại ở mỗi
+    câu mất ~1,4 giây; nạp một lần rồi dùng lại thì ~3 giây còn ~1,3 giây, kết quả không đổi.
+    """
+
+    def __init__(self, cache):
+        self.cache = cache
+        self.length = cache[0].offset
 
 
 class Translator:
@@ -47,28 +74,55 @@ class Translator:
         self.model, self.tokenizer = load(model_name)
         # Một GPU, một model: dịch tuần tự từng câu.
         self.lock = threading.Lock()
+        # Chỉ model họ Qwen3 (ChatML, có khối suy nghĩ) mới dùng cache; model khác đọc lại cả prompt.
+        template = self.tokenizer.chat_template or ""
+        self.use_cache = "<|im_start|>" in template and "enable_thinking" in template
+        self.prefixes = OrderedDict()
 
     def translate(self, text, source, target, context):
-        src = LANG_NAMES.get(source, source)
-        tgt = LANG_NAMES.get(target, target)
+        system = SYSTEM_PROMPT.format(src=LANG_NAMES.get(source, source), tgt=LANG_NAMES.get(target, target))
+        pairs = [c for c in context[-MAX_CONTEXT:] if c.get("src")] if MAX_CONTEXT else []
         user = ""
-        pairs = [c for c in context[-MAX_CONTEXT:] if c.get("src")]
         if pairs:
             lines = "\n".join(f"- {c['src']} => {c.get('dst', '')}" for c in pairs)
             user += f"Previous lines (context only, do not translate):\n{lines}\n\n"
         user += f"Translate this line:\n{text}"
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(src=src, tgt=tgt)},
-            {"role": "user", "content": user},
-        ]
-        # enable_thinking chỉ có ý nghĩa với Qwen3; template của model khác bỏ qua.
-        prompt = self.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, enable_thinking=False,
-        )
         max_tokens = min(256, 32 + len(text) * 4)
         with self.lock:
-            out = generate(self.model, self.tokenizer, prompt=prompt, max_tokens=max_tokens)
+            if self.use_cache:
+                out = self._cached((source, target), system, user, max_tokens)
+            else:
+                # enable_thinking chỉ có ý nghĩa với Qwen3; template của model khác bỏ qua.
+                prompt = self.tokenizer.apply_chat_template(
+                    [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    add_generation_prompt=True, enable_thinking=False,
+                )
+                out = generate(self.model, self.tokenizer, prompt=prompt, max_tokens=max_tokens)
         return clean(out)
+
+    def _cached(self, key, system, user, max_tokens):
+        prefix = self.prefixes.pop(key, None) or self._prefix(system)
+        self.prefixes[key] = prefix
+        while len(self.prefixes) > MAX_PREFIXES:
+            self.prefixes.popitem(last=False)
+        ids = self.tokenizer.encode(f"<|im_start|>user\n{user}{ANSWER_START}", add_special_tokens=False)
+        out = ""
+        try:
+            for r in stream_generate(self.model, self.tokenizer, prompt=ids, prompt_cache=prefix.cache, max_tokens=max_tokens):
+                out += r.text
+        finally:
+            # Dù lỗi hay không, cắt cache về đúng câu lệnh hệ thống để câu sau dùng lại.
+            trim_prompt_cache(prefix.cache, prefix.cache[0].offset - prefix.length)
+        return out
+
+    def _prefix(self, system):
+        ids = self.tokenizer.apply_chat_template(
+            [{"role": "system", "content": system}], tokenize=True, add_generation_prompt=False,
+        )
+        cache = make_prompt_cache(self.model)
+        self.model(mx.array(ids)[None], cache=cache)
+        mx.eval([c.state for c in cache])
+        return Prefix(cache)
 
 
 def clean(out):
@@ -105,7 +159,6 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(500, {"error": str(e)})
             return
         ms = int((time.monotonic() - t0) * 1000)
-        print(f"{source}->{target} {ms}ms  {text}  =>  {result}", flush=True)
         self.reply(200, {"text": result, "ms": ms})
 
     def reply(self, code, obj):
@@ -117,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def log_message(self, fmt, *args):
-        pass  # đã tự in từng câu dịch ở do_POST
+        pass  # không ghi log từng yêu cầu
 
 
 def main():
