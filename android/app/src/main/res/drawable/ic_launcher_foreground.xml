@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Biểu tượng phẳng: khung màn hình với hai dòng phụ đề. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:pathData="M30,36h48a4,4 0 0 1 4,4v28a4,4 0 0 1 -4,4h-48a4,4 0 0 1 -4,-4v-28a4,4 0 0 1 4,-4z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M36,56h36v4h-36z" />
+    <path android:fillColor="#FFC83D" android:pathData="M40,63h28v4h-28z" />
+</vector>
