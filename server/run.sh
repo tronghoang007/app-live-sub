@@ -2,6 +2,8 @@
 # Chạy server dịch LiveSub. Lần đầu tự tạo venv và cài mlx-lm; model tải về ~/.cache/huggingface.
 #   ./run.sh                                         # model mặc định (Qwen3-8B-4bit)
 #   ./run.sh --model mlx-community/gemma-3-12b-it-4bit
+#   ./run.sh --genre auto                            # tự nhận cảnh (mặc định: luôn dịch kiểu phim người lớn)
+#   ./run.sh --genre general                         # phim thường
 set -e
 cd "$(dirname "$0")"
 if [ ! -x .venv/bin/python ]; then

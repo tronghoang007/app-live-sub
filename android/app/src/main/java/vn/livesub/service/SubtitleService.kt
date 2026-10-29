@@ -200,7 +200,7 @@ class SubtitleService : LifecycleService() {
             withContext(asrDispatcher) {
                 val threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4)
                 val files = container.models.files(modelSize)
-                SpeechPipeline(files, SpeechEngine.create(modelSize, files, threads), tracker, langId, s.showPartials)
+                SpeechPipeline(files, SpeechEngine.create(modelSize, files, threads), tracker, langId, s.showPartials, s.quietSpeech)
             }
         } catch (e: Throwable) {
             AppLog.e(TAG, e) { "load model failed" }
@@ -285,6 +285,7 @@ class SubtitleService : LifecycleService() {
         val audioManager = getSystemService(AudioManager::class.java)
         AppLog.d(TAG) { "âm lượng media: ${audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)}/${audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}" }
         var laggingWarned = false
+        var droppedChunks = 0
         try {
             PlaybackAudioCapture(mp).chunks().collect { chunk ->
                 if (silence.onChunk(chunk, CHUNK_MS)) onSilenceStateChanged(silence.state, audioManager.isMusicActive)
@@ -293,6 +294,8 @@ class SubtitleService : LifecycleService() {
 
                 // Máy xử lý không kịp: bỏ bớt audio thay vì để độ trễ phụ đề tăng mãi.
                 if (queuedChunks.get() >= MAX_QUEUED_CHUNKS) {
+                    // Mỗi giây bị bỏ ghi một dòng: biết phụ đề mất vì máy chậm hay vì bộ lọc.
+                    if (++droppedChunks % 10 == 1) AppLog.w(TAG) { "máy không kịp, đã bỏ ${droppedChunks * CHUNK_MS} ms âm thanh" }
                     if (!laggingWarned) {
                         laggingWarned = true
                         showNotice(Notice(Notice.Level.WARNING, "Máy xử lý không kịp. Hãy tắt phụ đề tạm thời (partial) hoặc đổi model nhận dạng."))
@@ -529,8 +532,12 @@ class SubtitleService : LifecycleService() {
         /** ~8 giây audio tồn đọng. */
         private const val MAX_QUEUED_CHUNKS = 80
 
-        /** Số câu tối đa chờ bản dịch LLM (chưa tính câu đang dịch). */
-        private const val MAX_PENDING_REFINEMENTS = 2
+        /**
+         * Số câu tối đa chờ bản dịch LLM (chưa tính câu đang dịch). Một đoạn thoại nhiều người nói liền
+         * ra 3–5 câu ngắn cùng lúc ([vn.livesub.asr.SentenceBoundary.split]); hàng đợi nhỏ hơn thì câu đầu
+         * tràng bị bỏ sang ML Kit dù server vẫn theo kịp nhịp trung bình.
+         */
+        private const val MAX_PENDING_REFINEMENTS = 4
 
         const val ACTION_START = "vn.livesub.START"
         const val ACTION_STOP = "vn.livesub.STOP"

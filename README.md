@@ -19,6 +19,8 @@ android/                         Project Android Studio (Gradle Kotlin DSL)
   app/src/main/java/vn/livesub/
     audio/   PlaybackAudioCapture  – bắt âm thanh hệ thống
              SilenceMonitor        – phát hiện bị chặn capture / không có âm thanh
+             QuietBoost            – khuếch đại đoạn âm nhỏ khi bật "Bắt cả nói thầm"
+             MusicDetector         – nhận ra đang có nhạc (tỉ lệ khung âm thấp) để tạm tắt chế độ nói thầm
     asr/     ModelManager          – tải model Whisper + VAD (tải tiếp được khi rớt mạng)
              SpeechEngine          – interface + ReazonSpeech (transducer)
              WhisperAsr            – Whisper qua OfflineRecognizer của sherpa-onnx
@@ -27,9 +29,11 @@ android/                         Project Android Studio (Gradle Kotlin DSL)
              SentenceBoundary      – dấu kết câu: đoạn VAD đã hết câu chưa, còn chỗ gộp thêm không
              AudioHistory          – 12 s âm thanh gần nhất theo vị trí tuyệt đối (khớp `SpeechSegment.start`)
              SpeechPadding         – tính khoảng âm thanh đệm 0,3 s trước/sau mỗi đoạn VAD
+             SpeechMarks           – ghi từng lúc VAD ngưỡng thường có nghe ra tiếng nói (dùng khi có nhạc)
              SpeechCutter          – chọn chỗ tự cắt đoạn nói liền quá dài, bỏ phần đã cắt khi VAD chốt
              LanguageTracker       – giữ ngôn ngữ nguồn ổn định cho cả phiên
              HallucinationFilter   – lọc câu Whisper "bịa" khi gặp nhạc/ồn
+             VocalNoiseFilter      – bỏ cụm tiếng rên/thở ReazonSpeech ra lẫn trong câu, theo thời điểm từng chữ
     translate/ SubtitleTranslator  – interface engine dịch
              MlKitTranslator       – dịch ML Kit, tự tải model khi cần
              ServerTranslator      – dịch câu final bằng server LLM trên máy tính, lỗi thì dùng ML Kit
@@ -84,6 +88,7 @@ Nếu thiếu hai bước này, hệ thống có thể tự dừng service.
 - Nhãn **`⋮⋮ JA`** cho biết ngôn ngữ đang nhận diện. Có dấu `?` nghĩa là chưa chốt. Giữ và kéo nhãn này để đổi vị trí phụ đề.
 - Nút **🔓 Khoá ngôn ngữ** cố định ngôn ngữ hiện tại cho phiên. Bấm lại để mở khoá. Notification cũng có nút này cùng nút **Dừng**.
 - Phụ đề tạm (partial) hiện màu xám, câu chốt (final) hiện màu trắng và thay thế câu tạm. Sau 3,5 giây im lặng, phụ đề tự xoá (chỉnh được trong Cài đặt).
+- **Cài đặt → Bắt cả nói thầm** (mặc định bật; tắt đi nếu phim nhiều nhạc nền bị bắt nhầm thành chữ): hạ ngưỡng VAD từ 0,5 xuống 0,35 và tự khuếch đại đoạn âm nhỏ tối đa ×8 (+18 dB, không khuếch đại im lặng/nhiễu nền), để bắt được giọng thì thầm. Để không bắt nhầm nhạc thành chữ, app tự nhận ra lúc đang có nhạc (`MusicDetector`: trong 2 s gần nhất, tỉ lệ khung 20 ms nhỏ hơn nửa mức trung bình dưới 0,10 là nhạc, trên 0,18 là hết, phải ổn định 0,5 s mới đổi). Khi có nhạc thì không khuếch đại, và chỉ nhận đoạn mà một VAD thứ hai ở ngưỡng thường (0,5, nghe âm thanh gốc) cũng nghe ra tiếng nói ít nhất 30% thời gian, tức là chạy như khi tắt chế độ nói thầm. Đo bằng giọng và nhạc tổng hợp trên máy tính: giọng nói, giọng thì thầm, giọng có nhạc nền nhỏ cho tỉ lệ 0,20–0,54, nhạc 0,00–0,02; nhạc thật chưa đo. Áp dụng từ phiên sau. Các ngưỡng là ước lượng, chưa chỉnh theo phim thật; bản debug ghi log `có nhạc` / `hết nhạc` và các đoạn bị bỏ vì nhạc.
 - Phần phụ đề không nhận chạm, nên bạn vẫn chạm được vào video bên dưới.
 
 ## Chiếu lên TV
@@ -110,7 +115,11 @@ Chạy server (lần đầu tự tạo venv, cài `mlx-lm` và tải model ~4,6 
 cd server
 ./run.sh                                             # mặc định mlx-community/Qwen3-8B-4bit
 ./run.sh --model mlx-community/gemma-3-12b-it-4bit   # model khác trên HuggingFace mlx-community
+./run.sh --genre auto                                # tự nhận cảnh thân mật (mặc định: luôn dịch kiểu phim người lớn)
+./run.sh --genre general                             # phim thường
 ```
+
+Server dịch từng câu không kèm ngữ cảnh nên không biết đang là cảnh gì, và hay chọn nghĩa thông thường (`気持ちいい？` → "Có dễ chịu không?", `イっちゃう` → "I chứ"). Mặc định server luôn dịch kiểu phim người lớn (`--genre adult`). Với `--genre auto`, server tự nhận cảnh thân mật (hiện chỉ cho tiếng Nhật) bằng từ khoá trong khoảng 10 câu gần nhất, chỉ đếm điểm, không lưu chữ. Câu có từ khoá rõ (`イっちゃう`, `エッチ`...) dịch kiểu người lớn ngay; các từ cũng gặp ở phim thường (`濡れ`, `舐め`, `入れて`...) phải dồn đủ điểm mới chuyển. Tiếng rên, thở (`あっ`, `はぁ`) chỉ giữ chế độ chứ không làm chuyển, để phim kinh dị, hành động không bị nhận nhầm. Hết 8 câu liền không còn từ khoá thì về dịch thường. Ở chế độ người lớn, câu lệnh hệ thống thêm hướng dẫn không né tránh, cách đoán người nói để xưng anh/em, và các từ hay bị dịch sai (riêng cặp Nhật → Việt). `--genre general` dịch như phim thường. Câu lệnh hệ thống được cache nên không chậm thêm mỗi câu (~1,3 giây trên M1); lúc khởi động server nạp sẵn cả hai thể loại cho cặp Nhật → Việt (thêm ~8 giây).
 
 Trên điện thoại, mở **Cài đặt → Server dịch trên máy tính** và bật **Dịch bằng server trên máy tính**. Không cần nhập IP: server tự quảng bá qua Bonjour/mDNS (`_livesub._tcp`, bằng `dns-sd` có sẵn trên macOS), app tự tìm thấy và hiện tên máy. Trong phiên phụ đề, app tìm server liên tục, nên bật server sau cũng được. Khi kết nối được, overlay hiện "Đã kết nối server dịch".
 
@@ -149,17 +158,23 @@ Whisper trên máy chỉ trả về ngôn ngữ có khả năng cao nhất cho t
 
 ## Cách ngắt câu hoạt động
 
-Silero VAD chỉ nghe khoảng lặng, nên nghỉ lấy hơi giữa câu (≥ 0,45 s) hay đoạn bị cắt ở 6 s đều thành một đoạn riêng. Nếu mỗi đoạn là một câu phụ đề thì bản dịch bị cụt và một câu nói vỡ thành nhiều dòng. Ngoài ra Silero cắt sát chỗ nó nhận ra tiếng nói và cấu hình của nó không có tham số đệm. Khi đối chiếu log với phụ đề của video, đầu câu hay mất: video `少々 お待ちください` thành `お待ちください`, `わあ、これ何ですか` thành `これ何ですか`; cuối câu mất âm nhẹ (`ございま`). `SpeechPipeline` vì vậy lấy thêm **0,3 s âm thanh ngay trước và sau** mỗi đoạn VAD (từ `AudioHistory`, theo `segment.start`) trước khi đưa cho engine, và dùng đoạn đệm này cả cho partial. Nếu `start` không khớp âm thanh VAD trả về thì app bỏ đệm và ghi cảnh báo vào log. Đoạn bị cắt cứng ở 6 s không đệm cuối, để không lặp lại phần đầu đoạn kế. Nguyên nhân mất đầu/cuối câu mới là suy luận từ log, chưa xác nhận bằng âm thanh gốc.
+Silero VAD chỉ nghe khoảng lặng, nên nghỉ lấy hơi giữa câu (≥ 0,45 s) hay đoạn bị cắt vì quá dài đều thành một đoạn riêng. Nếu mỗi đoạn là một câu phụ đề thì bản dịch bị cụt và một câu nói vỡ thành nhiều dòng. Ngoài ra Silero cắt sát chỗ nó nhận ra tiếng nói và cấu hình của nó không có tham số đệm. Khi đối chiếu log với phụ đề của video, đầu câu hay mất: video `少々 お待ちください` thành `お待ちください`, `わあ、これ何ですか` thành `これ何ですか`; cuối câu mất âm nhẹ (`ございま`). `SpeechPipeline` vì vậy lấy thêm **0,3 s âm thanh ngay trước và sau** mỗi đoạn VAD (từ `AudioHistory`, theo `segment.start`) trước khi đưa cho engine, và dùng đoạn đệm này cả cho partial. Nếu `start` không khớp âm thanh VAD trả về thì app bỏ đệm và ghi cảnh báo vào log. Đoạn bị cắt cứng ở 6 s không đệm cuối, để không lặp lại phần đầu đoạn kế. Nguyên nhân mất đầu/cuối câu mới là suy luận từ log, chưa xác nhận bằng âm thanh gốc.
 
 `SpeechPipeline` cũng không chốt câu ngay khi VAD chốt đoạn:
 
 1. **Nhận dạng đoạn vừa chốt**, rồi xét chữ bằng `SentenceBoundary`:
-   - Đoạn nói liền không có chỗ nghỉ: VAD được cấu hình cắt ở 6 s nhưng đo trên máy có đoạn 7–15 s, nên app **tự cắt** ở chỗ lặng nhất khi đoạn đã dài 7 s (`SpeechCutter`) và bỏ phần đã cắt khi VAD chốt. Đoạn bị cắt kiểu này **hiện thành câu ngay, không giữ chờ ghép**: trước đây giữ lại thì phụ đề đứng hình gần 14 giây ở câu nói liền 15,7 giây.
+   - Đoạn nói liền không có chỗ nghỉ: app **tự cắt** ở chỗ lặng nhất (giữa hai chữ) khi đoạn đã dài 5,5 s (`SpeechCutter`) và bỏ phần đã cắt khi VAD chốt. VAD chỉ còn cắt cứng ở 10 s làm chốt chặn: trước đây VAD cắt ở 6 s đúng mốc thời gian nên hay cắt giữa chữ (log trên máy thật: `償って` thành `償っ` rồi bị dịch "Chết đi"), và đo trên máy cũng có đoạn 7–15 s VAD không cắt. Đoạn bị cắt kiểu này **hiện thành câu ngay, không giữ chờ ghép**: trước đây giữ lại thì phụ đề đứng hình gần 14 giây ở câu nói liền 15,7 giây.
    - Chữ kết thúc bằng dấu kết câu (`。！？!?.…`, bỏ qua ngoặc đóng): hết câu, chốt final ngay.
    - Chữ không có dấu kết câu (hay gặp là dấu phẩy hoặc bỏ lửng): câu chưa dứt.
+   - Riêng **câu đáp ngắn đứng riêng** (dưới 1 s, ví dụ `はい`, `うん`, `え？`) thì chốt luôn, trừ khi dừng ở dấu phẩy hoặc trợ từ. Trong hội thoại người kia nói tiếp ngay, nên nếu giữ lại chờ ghép thì Whisper nhận dạng lại cả đoạn dài và hay bỏ mất câu ngắn. Đoạn VAD từ 0,2 s trở lên mới được nhận dạng (trước là 0,3 s, làm mất các câu đáp ngắn), và câu một chữ kana có dấu hỏi/than (`え？`) không còn bị coi là rác.
+   - ReazonSpeech gặp tiếng rên, thở thì ra chữ `あっ`, `んっ`, `はぁ` lẫn vào câu. `VocalNoiseFilter` gom chữ thành cụm theo thời điểm từng chữ (cách nhau quá 0,5 s là cụm khác) và chỉ bỏ cụm toàn âm rên (`あ ん っ は お ー`), giữ lời thật ở giữa (`だめ` giữa tiếng rên). Đo trên máy thật thấy chữ đầu tiên luôn được báo ở ~0,00 s và khoảng cách giữa các chữ của lời nói thật có lúc > 0,5 s (`は@0,00 い@0,88`), nên chữ đầu luôn ghép với chữ thứ hai và chữ kana đứng lẻ không bị bỏ (bản đầu bỏ chữ lẻ làm `そうね` thành `うね`). Đoạn đã bỏ tiếng rên thì không còn bị coi là "quá ít chữ so với độ dài"; bản debug ghi log `bỏ tiếng rên/thở` kèm thời điểm từng chữ.
    - ReazonSpeech không xuất dấu câu, nên khoảng lặng là hết câu, trừ khi chữ dừng ở trợ từ (`は が を に へ と も や`, ví dụ "私は" rồi mới tới "学校の学生です"). Lời chào `こんにちは`, `こんばんは`, `どうも` vẫn tính là câu trọn.
+   - **Chữ tạm đứng yên thì chốt luôn:** cảnh có tiếng rên, thở liên tục thì VAD không bao giờ thấy quãng lặng, câu 1 s như `やめてください` phải chờ đủ 6 s mới tự cắt (log trên máy thật). Nếu chữ tạm (partial) không đổi trong 1,2 s giọng nói mới, người nói đã dứt và phần sau chỉ là tiếng rên/thở/nhạc: app chốt câu ngay. Cần bật phụ đề tạm.
+   - Đoạn dài từ 2,5 s mà chỉ ra tối đa 3 âm giống tiếng rên (`うん`, `ん`, `あ`) thì bỏ: log trên máy thật thấy tiếng `うーん/んー` thành `うん` rồi hiện "Ừ" liên tục. Lời ngắn thật (`よし`, `いい`, `はい`) trong đoạn dài toàn tiếng rên vẫn giữ khi không có nhạc.
 2. **Câu chưa dứt thì giữ lại**: chữ vẫn hiện ngay dưới dạng phụ đề tạm (màu xám). Đoạn VAD kế tiếp được ghép vào âm thanh đã giữ và **nhận dạng lại cả câu**, nên chỗ bị cắt giữa từ cũng được nghe lại liền mạch. Partial trong lúc đó cũng giải mã từ đầu câu.
 3. **Chốt final** khi chữ đã có dấu kết câu, hoặc sau **0,7 s** không có giọng nói mới (cộng 0,45 s lặng của VAD), hoặc khi ghép thêm sẽ vượt **8 s** giọng nói. 8 s là mức tạm chọn để bản dịch còn vừa khung 3 dòng. Câu vượt mức này bị chốt riêng như trước.
+
+4. **Tách tràng thoại thành từng câu** khi chốt final: nhiều người nói nối nhau không có chỗ lặng 0,45 s nên VAD gộp cả tràng tới 5,5 s thành một đoạn, Whisper ra `はい。そうです。じゃあ行こう。`. Chữ được tách theo dấu kết câu (`。！？!?`, và `.` khi theo sau là khoảng trắng; `…` và số thập phân không tách), mỗi câu thành một dòng phụ đề và được dịch riêng. Một tràng có thể ra vài câu cùng lúc nên hàng đợi dịch LLM giữ tối đa 4 câu. Khung chỉ hiện số câu theo cài đặt (mặc định 3), nên câu đầu tràng có thể bị đẩy khỏi khung ngay. ReazonSpeech không có dấu câu nên không tách được.
 
 Chỉ câu final mới dịch bằng server LLM nên bản dịch giờ là cả câu thay vì từng mảnh.
 

@@ -56,6 +56,8 @@ data class AppSettings(
     /** Số câu hiển thị cùng lúc, xếp chồng kiểu chat (1 = kiểu phụ đề phim). */
     val stackSize: Int = 3,
     val showPartials: Boolean = true,
+    /** Bắt cả nói thầm: VAD nhạy hơn và khuếch đại đoạn âm nhỏ; dễ bắt nhầm nhạc/tiếng ồn hơn. */
+    val quietSpeech: Boolean = true,
     /**
      * Cho chạm xuyên qua khung phụ đề xuống video. Android 12+ chỉ cho phép khi
      * cửa sổ overlay trong suốt tối thiểu 20%, nên khi bật chữ sẽ hơi mờ.

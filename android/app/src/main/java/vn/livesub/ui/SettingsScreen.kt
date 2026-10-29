@@ -106,6 +106,13 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
                     checked = s.showPartials,
                     onChange = { v -> vm.update { it.copy(showPartials = v) } },
                 )
+                LabeledSwitch(
+                    label = "Bắt cả nói thầm",
+                    description = "Nhận ra giọng nhỏ, thì thầm và tự khuếch đại đoạn âm thanh nhỏ. " +
+                        "Có thể bắt nhầm nhạc hoặc tiếng ồn thành chữ. Áp dụng từ phiên sau.",
+                    checked = s.quietSpeech,
+                    onChange = { v -> vm.update { it.copy(quietSpeech = v) } },
+                )
             }
 
             SectionCard("Server dịch trên máy tính") {

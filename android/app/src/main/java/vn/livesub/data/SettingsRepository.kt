@@ -32,6 +32,7 @@ class SettingsRepository(private val context: Context) {
         val showSource = booleanPreferencesKey("show_source")
         val stackSize = intPreferencesKey("stack_size")
         val showPartials = booleanPreferencesKey("show_partials")
+        val quietSpeech = booleanPreferencesKey("quiet_speech")
         val touchThrough = booleanPreferencesKey("touch_through")
         val alwaysShowBox = booleanPreferencesKey("always_show_box")
         val clearAfter = longPreferencesKey("clear_after_ms")
@@ -57,6 +58,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.showSource] = s.showSourceText
             prefs[Keys.stackSize] = s.stackSize
             prefs[Keys.showPartials] = s.showPartials
+            prefs[Keys.quietSpeech] = s.quietSpeech
             prefs[Keys.touchThrough] = s.touchThrough
             prefs[Keys.alwaysShowBox] = s.alwaysShowBox
             prefs[Keys.clearAfter] = s.clearAfterMs
@@ -81,6 +83,7 @@ class SettingsRepository(private val context: Context) {
             showSourceText = this[Keys.showSource] ?: d.showSourceText,
             stackSize = this[Keys.stackSize] ?: d.stackSize,
             showPartials = this[Keys.showPartials] ?: d.showPartials,
+            quietSpeech = this[Keys.quietSpeech] ?: d.quietSpeech,
             touchThrough = this[Keys.touchThrough] ?: d.touchThrough,
             alwaysShowBox = this[Keys.alwaysShowBox] ?: d.alwaysShowBox,
             clearAfterMs = this[Keys.clearAfter] ?: d.clearAfterMs,
